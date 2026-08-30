@@ -127,3 +127,55 @@ func TestKeepWordsTag_EmptyByDefault(t *testing.T) {
 		t.Fatalf("Execute() = %q, want empty string", got)
 	}
 }
+
+func TestKeepWordsTag_EarlierOverlappingKeywordWins(t *testing.T) {
+	engine := NewEngine()
+	ctx := &Context{OriginalFilename: "ABC-111 【ずん】物語.mp4"}
+
+	got, err := engine.Execute("<KEEPWORDS:【ずん】|ずん>", ctx)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if got != "【ずん】" {
+		t.Fatalf("Execute() = %q, want %q", got, "【ずん】")
+	}
+}
+
+func TestKeepWordsTag_LaterKeywordUsedWhenPreferredKeywordAbsent(t *testing.T) {
+	engine := NewEngine()
+	ctx := &Context{OriginalFilename: "ABC-111 ずん物語.mp4"}
+
+	got, err := engine.Execute("<KEEPWORDS:【ずん】|ずん>", ctx)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if got != "ずん" {
+		t.Fatalf("Execute() = %q, want %q", got, "ずん")
+	}
+}
+
+func TestKeepWordsTag_LaterKeywordKeptAtSeparateOccurrence(t *testing.T) {
+	engine := NewEngine()
+	ctx := &Context{OriginalFilename: "ABC-111 【ずん】物語 ずん特典.mp4"}
+
+	got, err := engine.Execute("<KEEPWORDS:【ずん】|ずん>", ctx)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if got != "【ずん】 ずん" {
+		t.Fatalf("Execute() = %q, want %q", got, "【ずん】 ずん")
+	}
+}
+
+func TestKeepWordsTag_ConfigOrderDefinesPriority(t *testing.T) {
+	engine := NewEngine()
+	ctx := &Context{OriginalFilename: "ABC-111 【ずん】物語.mp4"}
+
+	got, err := engine.Execute("<KEEPWORDS:ずん|【ずん】>", ctx)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if got != "ずん" {
+		t.Fatalf("Execute() = %q, want %q", got, "ずん")
+	}
+}
