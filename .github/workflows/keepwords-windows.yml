@@ -13,6 +13,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Apply KEEPWORDS source patch
+        shell: pwsh
+        run: |
+          git apply --check .github/patches/keepwords.patch
+          git apply .github/patches/keepwords.patch
+          git diff --check
+          git diff -- internal/template/engine.go web/frontend/src/lib/components/settings/sections/OutputSettingsSection.svelte
+
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
@@ -51,7 +59,7 @@ jobs:
 
       - name: Test KEEPWORDS template package
         shell: pwsh
-        run: go test ./internal/template
+        run: go test -tags keepwords ./internal/template
 
       - name: Install frontend dependencies
         shell: pwsh
@@ -86,6 +94,7 @@ jobs:
         shell: pwsh
         run: |
           if (-not (Test-Path 'dist/Javinizer-KEEPWORDS.exe')) { throw 'Javinizer-KEEPWORDS.exe was not created' }
+          Get-FileHash 'dist/Javinizer-KEEPWORDS.exe' -Algorithm SHA256
           Get-Item 'dist/Javinizer-KEEPWORDS.exe' | Format-List Name,Length,LastWriteTime
 
       - name: Upload Windows executable
