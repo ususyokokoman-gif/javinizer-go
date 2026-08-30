@@ -1,0 +1,97 @@
+name: KEEPWORDS Windows Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/keepwords
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/frontend/package-lock.json
+
+      - name: Install MSYS2 UCRT64 toolchain
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+
+      - name: Add GCC to PATH
+        shell: pwsh
+        run: |
+          'C:\msys64\ucrt64\bin' | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          'CC=gcc' | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          'CGO_ENABLED=1' | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Verify toolchain
+        shell: pwsh
+        run: |
+          go version
+          node --version
+          npm --version
+          gcc --version
+
+      - name: Test KEEPWORDS template package
+        shell: pwsh
+        run: go test ./internal/template
+
+      - name: Install frontend dependencies
+        shell: pwsh
+        run: npm ci
+        working-directory: web/frontend
+
+      - name: Build frontend
+        shell: pwsh
+        run: npm run build
+        working-directory: web/frontend
+
+      - name: Stage embedded frontend
+        shell: pwsh
+        run: |
+          if (Test-Path 'web/dist') { Remove-Item 'web/dist' -Recurse -Force }
+          New-Item -ItemType Directory -Path 'web/dist' -Force | Out-Null
+          Copy-Item 'web/frontend/build/*' 'web/dist' -Recurse -Force
+
+      - name: Generate Windows icon resource
+        shell: pwsh
+        run: go run ./internal/desktop/icons/genicon -ico internal/desktop/icons/javinizer.ico -o cmd/javinizer/javinizer.syso -arch amd64
+
+      - name: Build Windows desktop executable
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path dist -Force | Out-Null
+          $commit = git rev-parse --short HEAD
+          $buildDate = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+          go build -trimpath -tags 'desktop,production' -ldflags "-w -s -H windowsgui -X github.com/javinizer/javinizer-go/internal/version.Version=keepwords -X github.com/javinizer/javinizer-go/internal/version.Commit=$commit -X github.com/javinizer/javinizer-go/internal/version.BuildDate=$buildDate -X github.com/javinizer/javinizer-go/internal/desktop.BuildDesktop=1" -o 'dist/Javinizer-KEEPWORDS.exe' ./cmd/javinizer
+
+      - name: Verify artifact exists
+        shell: pwsh
+        run: |
+          if (-not (Test-Path 'dist/Javinizer-KEEPWORDS.exe')) { throw 'Javinizer-KEEPWORDS.exe was not created' }
+          Get-Item 'dist/Javinizer-KEEPWORDS.exe' | Format-List Name,Length,LastWriteTime
+
+      - name: Upload Windows executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: Javinizer-KEEPWORDS-Windows
+          path: dist/Javinizer-KEEPWORDS.exe
+          if-no-files-found: error
+          retention-days: 14
