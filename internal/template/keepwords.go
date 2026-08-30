@@ -5,9 +5,19 @@ import (
 	"strings"
 )
 
+type keepWordRange struct {
+	start int
+	end   int
+}
+
 // resolveKeepWordsTag returns only user-configured words that are present in
 // the original filename. No words are configured by default; the modifier is
 // the complete allow-list for each template invocation.
+//
+// Configured words are evaluated left-to-right. Earlier words have priority:
+// if a later word matches only inside a byte range already claimed by an
+// earlier word, the later word is suppressed. If the later word also occurs at
+// a separate non-overlapping position, it is still preserved once.
 //
 // Syntax:
 //   <KEEPWORDS:word1|word2|word3>
@@ -56,6 +66,8 @@ func resolveKeepWordsTag(modifier string, ctx *Context) string {
 
 	seen := make(map[string]struct{})
 	matches := make([]string, 0)
+	occupied := make([]keepWordRange, 0)
+
 	for _, configured := range strings.Split(wordSpec, "|") {
 		configured = strings.TrimSpace(configured)
 		if configured == "" {
@@ -68,9 +80,23 @@ func resolveKeepWordsTag(modifier string, ctx *Context) string {
 		}
 		seen[key] = struct{}{}
 
-		if containsKeepWord(original, configured) {
-			matches = append(matches, configured)
+		candidateRanges := findKeepWordRanges(original, configured)
+		if len(candidateRanges) == 0 {
+			continue
 		}
+
+		availableRanges := make([]keepWordRange, 0, len(candidateRanges))
+		for _, candidate := range candidateRanges {
+			if !overlapsAnyKeepWordRange(candidate, occupied) {
+				availableRanges = append(availableRanges, candidate)
+			}
+		}
+		if len(availableRanges) == 0 {
+			continue
+		}
+
+		matches = append(matches, configured)
+		occupied = append(occupied, availableRanges...)
 	}
 
 	if len(matches) == 0 {
@@ -80,35 +106,58 @@ func resolveKeepWordsTag(modifier string, ctx *Context) string {
 }
 
 func containsKeepWord(filename, configured string) bool {
+	return len(findKeepWordRanges(filename, configured)) > 0
+}
+
+func findKeepWordRanges(filename, configured string) []keepWordRange {
 	if configured == "" {
-		return false
+		return nil
 	}
 
 	haystack := strings.ToLower(filename)
 	needle := strings.ToLower(configured)
+	if len(needle) == 0 || len(needle) > len(haystack) {
+		return nil
+	}
 
 	// Pure ASCII alphanumeric tokens use boundaries so short tokens such as AI
 	// do not match TRAILER and 4K does not match 14K. Tokens containing
 	// punctuation (for example -UC) and non-ASCII tokens (for example 字幕) are
 	// matched literally as substrings.
-	if !isASCIIAlnum(configured) {
-		return strings.Contains(haystack, needle)
-	}
-
+	requireASCIIWordBoundaries := isASCIIAlnum(configured)
+	ranges := make([]keepWordRange, 0)
 	searchFrom := 0
+
 	for searchFrom <= len(haystack)-len(needle) {
 		rel := strings.Index(haystack[searchFrom:], needle)
 		if rel < 0 {
-			return false
+			break
 		}
+
 		start := searchFrom + rel
 		end := start + len(needle)
-		leftOK := start == 0 || !isASCIIAlnumByte(haystack[start-1])
-		rightOK := end == len(haystack) || !isASCIIAlnumByte(haystack[end])
-		if leftOK && rightOK {
+		if !requireASCIIWordBoundaries || asciiKeepWordBoundariesOK(haystack, start, end) {
+			ranges = append(ranges, keepWordRange{start: start, end: end})
+		}
+
+		// Advance one byte so overlapping literal occurrences can still be found.
+		searchFrom = start + 1
+	}
+
+	return ranges
+}
+
+func asciiKeepWordBoundariesOK(haystack string, start, end int) bool {
+	leftOK := start == 0 || !isASCIIAlnumByte(haystack[start-1])
+	rightOK := end == len(haystack) || !isASCIIAlnumByte(haystack[end])
+	return leftOK && rightOK
+}
+
+func overlapsAnyKeepWordRange(candidate keepWordRange, occupied []keepWordRange) bool {
+	for _, used := range occupied {
+		if candidate.start < used.end && used.start < candidate.end {
 			return true
 		}
-		searchFrom = start + 1
 	}
 	return false
 }
