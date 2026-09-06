@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -103,6 +104,30 @@ func submissionAggregate(results []*models.ScraperResult) (*models.Movie, *aggre
 	return &models.Movie{ID: results[0].ID, ContentID: results[0].ContentID, Title: results[0].Title}, &aggregator.AggregateResult{}, nil
 }
 
+func submissionASCIIAlnum(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')) {
+			return false
+		}
+	}
+	return true
+}
+
+// submissionContainsAnnotation mirrors the feature's intended matching rule:
+// short ASCII words such as AI are annotations only at token boundaries, while
+// punctuation/non-ASCII words are literal annotations. This prevents the test
+// itself from falsely treating the AI inside the real title token MAID as a leak.
+func submissionContainsAnnotation(text, word string) bool {
+	if submissionASCIIAlnum(word) {
+		re := regexp.MustCompile(`(?i)(^|[^A-Za-z0-9])` + regexp.QuoteMeta(word) + `([^A-Za-z0-9]|$)`)
+		return re.MatchString(text)
+	}
+	return strings.Contains(strings.ToUpper(text), strings.ToUpper(word))
+}
+
 func TestSubmissionE2E_UnmatchedFilenameKeepWordsToResolvedCatalogID(t *testing.T) {
 	const filenameWithoutExt = `MAID 本当の作品タイトル_SPECIAL_4K_8K_VR_AI_字幕_中文字幕_-UC_UNCENSORED`
 	const filePath = `C:\videos\MAID 本当の作品タイトル_SPECIAL_4K_8K_VR_AI_字幕_中文字幕_-UC_UNCENSORED.mp4`
@@ -153,9 +178,8 @@ func TestSubmissionE2E_UnmatchedFilenameKeepWordsToResolvedCatalogID(t *testing.
 		t.Fatal("no web search HTTP request was made")
 	}
 	for _, q := range queries {
-		upper := strings.ToUpper(q)
 		for _, unwanted := range append(append([]string(nil), keepWords...), "FAKE-999") {
-			if strings.Contains(upper, strings.ToUpper(unwanted)) {
+			if submissionContainsAnnotation(q, unwanted) {
 				t.Fatalf("web query leaked annotation/false matcher ID %q: %q", unwanted, q)
 			}
 		}
