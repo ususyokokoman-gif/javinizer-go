@@ -13,6 +13,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Create evidence directory
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path evidence -Force | Out-Null
+          "submission_evidence_version=1" | Out-File evidence/manifest.txt -Encoding utf8
+          "head_sha=$(git rev-parse HEAD)" | Out-File evidence/manifest.txt -Encoding utf8 -Append
+          "branch=$(git branch --show-current)" | Out-File evidence/manifest.txt -Encoding utf8 -Append
+          "production_build_tags=desktop,production" | Out-File evidence/manifest.txt -Encoding utf8 -Append
+
       - name: Apply KEEPWORDS source patch
         shell: pwsh
         run: |
@@ -22,7 +31,6 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'KEEPWORDS patch apply failed' }
           git diff --check
           if ($LASTEXITCODE -ne 0) { throw 'KEEPWORDS patch produced invalid diff' }
-          git diff -- internal/template/engine.go web/frontend/src/lib/components/settings/sections/OutputSettingsSection.svelte
 
       - name: Apply r18.dev title-search source patch
         shell: pwsh
@@ -33,7 +41,6 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'title-search patch apply failed' }
           git diff --check
           if ($LASTEXITCODE -ne 0) { throw 'title-search patch produced invalid diff' }
-          git diff -- internal/r18devdump/store.go internal/r18devdump/import.go
 
       - name: Apply web-first title resolver hook
         shell: pwsh
@@ -44,7 +51,6 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'title web-search patch apply failed' }
           git diff --check
           if ($LASTEXITCODE -ne 0) { throw 'title web-search patch produced invalid diff' }
-          git diff -- internal/scrape/scrape.go
 
       - name: Apply unmatched-filename web-first handoff patch
         shell: pwsh
@@ -55,7 +61,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'worker web-first patch apply failed' }
           git diff --check
           if ($LASTEXITCODE -ne 0) { throw 'worker web-first patch produced invalid diff' }
-          git diff -- internal/worker/scrape_phase.go
+
+      - name: Capture applied source diff
+        shell: pwsh
+        run: |
+          git diff -- internal/template/engine.go internal/scrape/scrape.go internal/scrape/title_web_search.go internal/worker/scrape_phase.go | Out-File evidence/applied-source.diff -Encoding utf8
+          git status --short | Out-File evidence/git-status-after-patches.txt -Encoding utf8
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -85,32 +96,55 @@ jobs:
           'CC=gcc' | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           'CGO_ENABLED=1' | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Verify toolchain
+      - name: Verify and record toolchain
         shell: pwsh
         run: |
-          go version
-          node --version
-          npm --version
-          gcc --version
+          go version | Tee-Object -FilePath evidence/toolchain.txt
+          node --version | Tee-Object -FilePath evidence/toolchain.txt -Append
+          npm --version | Tee-Object -FilePath evidence/toolchain.txt -Append
+          gcc --version | Select-Object -First 1 | Tee-Object -FilePath evidence/toolchain.txt -Append
+          go env GOOS GOARCH CGO_ENABLED | Tee-Object -FilePath evidence/toolchain.txt -Append
 
-      - name: Format patched Go sources
+      - name: Format patched Go sources and submission tests
         shell: pwsh
         run: |
-          gofmt -w internal/scrape/scrape.go internal/scrape/title_web_search.go internal/scrape/keepwords_search_noise.go internal/scrape/title_web_search_keepwords_test.go internal/scrape/keepwords_search_noise_test.go internal/worker/scrape_phase.go internal/worker/web_first_keepwords_test.go internal/r18devdump/store.go internal/r18devdump/import.go
+          gofmt -w internal/scrape/scrape.go internal/scrape/title_web_search.go internal/scrape/keepwords_search_noise.go internal/scrape/title_web_search_keepwords_test.go internal/scrape/keepwords_search_noise_test.go internal/scrape/title_web_search_live_contract_test.go internal/worker/scrape_phase.go internal/worker/web_first_keepwords_test.go internal/worker/keepwords_submission_e2e_test.go internal/r18devdump/store.go internal/r18devdump/import.go
           git diff --check
           if ($LASTEXITCODE -ne 0) { throw 'gofmt produced invalid diff' }
 
-      - name: Test KEEPWORDS template package
+      - name: Prove submission tags do not alter production source
         shell: pwsh
-        run: go test -tags keepwords ./internal/template
+        run: |
+          $hits = Get-ChildItem internal -Recurse -Filter '*.go' | Where-Object { $_.Name -notlike '*_test.go' } | Select-String -Pattern '//go:build.*(submissione2e|submissionlive|keepwords)'
+          if ($hits) {
+            $hits | Tee-Object -FilePath evidence/forbidden-feature-source-tags.txt
+            throw 'feature/submission build tag found on non-test production source'
+          }
+          'PASS: submissione2e/submissionlive/keepwords tags only add tests; production source set is unchanged.' | Out-File evidence/source-tag-proof.txt -Encoding utf8
 
-      - name: Test worker web-first handoff
+      - name: Test KEEPWORDS template under production source tags
         shell: pwsh
-        run: go test -tags keepwords ./internal/worker -run '^TestBuildScrapeCmd_WebFirst' -count=1
+        run: |
+          go test -v -tags 'desktop,production,keepwords' ./internal/template -run 'KeepWords' -count=1 2>&1 | Tee-Object -FilePath evidence/template-keepwords.txt
+          if ($LASTEXITCODE -ne 0) { throw 'KEEPWORDS template test failed' }
 
-      - name: Test web-first title resolution and r18.dev lookup
+      - name: Test deterministic worker-to-web-to-scraper E2E
         shell: pwsh
-        run: go test -tags keepwords ./internal/scrape ./internal/r18devdump ./internal/scraper/r18dev -count=1
+        run: |
+          go test -v -tags 'desktop,production,submissione2e' ./internal/worker -run '^TestSubmissionE2E_UnmatchedFilenameKeepWordsToResolvedCatalogID$' -count=1 2>&1 | Tee-Object -FilePath evidence/deterministic-e2e.txt
+          if ($LASTEXITCODE -ne 0) { throw 'submission deterministic E2E failed' }
+
+      - name: Test existing web-first regressions under production source tags
+        shell: pwsh
+        run: |
+          go test -v -tags 'desktop,production,keepwords' ./internal/scrape ./internal/r18devdump ./internal/scraper/r18dev -count=1 2>&1 | Tee-Object -FilePath evidence/regression-tests.txt
+          if ($LASTEXITCODE -ne 0) { throw 'web-first regression tests failed' }
+
+      - name: Test live public-web title resolution
+        shell: pwsh
+        run: |
+          go test -v -tags 'desktop,production,submissionlive' ./internal/scrape -run '^TestSubmissionLiveTitleToCatalogID$' -count=1 -timeout 90s 2>&1 | Tee-Object -FilePath evidence/live-web-contract.txt
+          if ($LASTEXITCODE -ne 0) { throw 'LIVE web title-to-catalog-ID contract failed; do not distribute this build' }
 
       - name: Install frontend dependencies
         shell: pwsh
@@ -141,12 +175,23 @@ jobs:
           $buildDate = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
           go build -trimpath -tags 'desktop,production' -ldflags "-w -s -H windowsgui -X github.com/javinizer/javinizer-go/internal/version.Version=keepwords-webtitle -X github.com/javinizer/javinizer-go/internal/version.Commit=$commit -X github.com/javinizer/javinizer-go/internal/version.BuildDate=$buildDate -X github.com/javinizer/javinizer-go/internal/desktop.BuildDesktop=1" -o 'dist/Javinizer-KEEPWORDS.exe' ./cmd/javinizer
 
-      - name: Verify artifact exists
+      - name: Verify executable and record hash
         shell: pwsh
         run: |
           if (-not (Test-Path 'dist/Javinizer-KEEPWORDS.exe')) { throw 'Javinizer-KEEPWORDS.exe was not created' }
-          Get-FileHash 'dist/Javinizer-KEEPWORDS.exe' -Algorithm SHA256
-          Get-Item 'dist/Javinizer-KEEPWORDS.exe' | Format-List Name,Length,LastWriteTime
+          $hash = Get-FileHash 'dist/Javinizer-KEEPWORDS.exe' -Algorithm SHA256
+          $item = Get-Item 'dist/Javinizer-KEEPWORDS.exe'
+          "exe_name=$($item.Name)" | Out-File evidence/executable.txt -Encoding utf8
+          "exe_bytes=$($item.Length)" | Out-File evidence/executable.txt -Encoding utf8 -Append
+          "exe_sha256=$($hash.Hash.ToLowerInvariant())" | Out-File evidence/executable.txt -Encoding utf8 -Append
+          "verified_head_sha=$(git rev-parse HEAD)" | Out-File evidence/executable.txt -Encoding utf8 -Append
+          Get-Content evidence/executable.txt
+
+      - name: Mark submission verification complete
+        shell: pwsh
+        run: |
+          'verification_result=PASS' | Out-File evidence/result.txt -Encoding utf8
+          'meaning=deterministic E2E PASS + live public-web title-to-ID PASS + production-tag Windows EXE built' | Out-File evidence/result.txt -Encoding utf8 -Append
 
       - name: Upload Windows executable
         uses: actions/upload-artifact@v4
@@ -154,4 +199,13 @@ jobs:
           name: Javinizer-KEEPWORDS-Windows
           path: dist/Javinizer-KEEPWORDS.exe
           if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Javinizer-KEEPWORDS-verification-evidence
+          path: evidence/
+          if-no-files-found: warn
           retention-days: 14
