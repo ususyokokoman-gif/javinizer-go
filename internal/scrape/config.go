@@ -2,10 +2,12 @@ package scrape
 
 import (
 	"context"
+	"strings"
 
 	"github.com/javinizer/javinizer-go/internal/config"
 	"github.com/javinizer/javinizer-go/internal/models"
 	"github.com/javinizer/javinizer-go/internal/translation"
+	"golang.org/x/text/unicode/norm"
 )
 
 // Config holds the subset of application configuration needed by the Scrape seam.
@@ -81,7 +83,6 @@ func NewTranslatorFromApp(cfg *config.TranslationConfig) Translator {
 }
 
 // translationAdapter wraps a translationService to satisfy the Translator interface.
-// This is the production adapter — the only one that performs real translation.
 type translationAdapter struct {
 	svc      *translationService
 	enabled  bool
