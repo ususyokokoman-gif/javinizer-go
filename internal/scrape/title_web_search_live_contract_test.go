@@ -21,19 +21,23 @@ func TestSubmissionLiveTitleToCatalogID(t *testing.T) {
 		t.Fatalf("construct production HTTP client: %v", err)
 	}
 
-	cfg := &Config{FilenameKeepWords: []string{"SPECIAL", "4K"}}
+	keepWords := []string{"SPECIAL", "4K", "8K", "VR", "AI", "字幕", "中文字幕", "-UC", "UNCENSORED"}
+	cfg := &Config{FilenameKeepWords: keepWords}
 	s := &Scraper{httpClient: client, cfg: cfg}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 75*time.Second)
 	defer cancel()
 
-	// Stable historical title whose catalog ID is SSIS-001. The synthetic
-	// KEEPWORDS suffix proves that the live query path removes configured
-	// annotations before contacting the search provider.
-	raw := "一ヶ月間の禁欲の果てに彼女のルームメイト2人と浮気SEXだけに没頭した彼女不在の3日間_SPECIAL_4K"
+	// Stable historical title whose catalog ID is SSIS-001. The suffix covers
+	// short ASCII tokens, resolution/VR noise, non-ASCII text, a punctuation
+	// token, and a longer English annotation in one real-network request path.
+	raw := "一ヶ月間の禁欲の果てに彼女のルームメイト2人と浮気SEXだけに没頭した彼女不在の3日間_SPECIAL_4K_8K_VR_AI_字幕_中文字幕_-UC_UNCENSORED"
 	cleaned := stripConfiguredKeepWords(raw, cfg.FilenameKeepWords)
-	if strings.Contains(strings.ToUpper(cleaned), "SPECIAL") || strings.Contains(strings.ToUpper(cleaned), "4K") {
-		t.Fatalf("KEEPWORDS remained before live lookup: raw=%q cleaned=%q", raw, cleaned)
+	upperCleaned := strings.ToUpper(cleaned)
+	for _, unwanted := range keepWords {
+		if strings.Contains(upperCleaned, strings.ToUpper(unwanted)) {
+			t.Fatalf("KEEPWORD %q remained before live lookup: raw=%q cleaned=%q", unwanted, raw, cleaned)
+		}
 	}
 	title := normalizeTitleForWebSearch(cleaned)
 	t.Logf("LIVE_INPUT raw=%q", raw)
