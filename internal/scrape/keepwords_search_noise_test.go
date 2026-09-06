@@ -63,6 +63,16 @@ func TestResolveTitleViaWebWithConfiguredNoiseCleansMovieIDBeforeLookup(t *testi
 	}
 }
 
+func TestResolveTitleViaWebWithConfiguredNoiseUsesEmbeddedCatalogIDAfterCleanup(t *testing.T) {
+	s := &Scraper{cfg: &Config{FilenameKeepWords: []string{"SPECIAL", "4K", "【配布】"}}}
+	cmd := ScrapeCmd{MovieID: `ABW-123_本当の作品タイトル_SPECIAL_4K_【配布】`}
+
+	got := s.resolveTitleViaWebWithConfiguredNoise(context.Background(), cmd)
+	if got.MovieID != "ABW-123" {
+		t.Fatalf("embedded catalog ID not selected after KEEPWORDS cleanup: %q", got.MovieID)
+	}
+}
+
 func TestResolveTitleViaWebWithConfiguredNoiseDoesNotTouchCatalogID(t *testing.T) {
 	s := &Scraper{cfg: &Config{FilenameKeepWords: []string{"ABC"}}}
 	cmd := ScrapeCmd{MovieID: "ABC-123"}
