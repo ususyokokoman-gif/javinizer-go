@@ -17,7 +17,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path evidence -Force | Out-Null
-          "submission_evidence_version=1" | Out-File evidence/manifest.txt -Encoding utf8
+          "submission_evidence_version=2" | Out-File evidence/manifest.txt -Encoding utf8
           "head_sha=$(git rev-parse HEAD)" | Out-File evidence/manifest.txt -Encoding utf8 -Append
           "branch=$(git branch --show-current)" | Out-File evidence/manifest.txt -Encoding utf8 -Append
           "production_build_tags=desktop,production" | Out-File evidence/manifest.txt -Encoding utf8 -Append
@@ -175,6 +175,60 @@ jobs:
           $buildDate = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
           go build -trimpath -tags 'desktop,production' -ldflags "-w -s -H windowsgui -X github.com/javinizer/javinizer-go/internal/version.Version=keepwords-webtitle -X github.com/javinizer/javinizer-go/internal/version.Commit=$commit -X github.com/javinizer/javinizer-go/internal/version.BuildDate=$buildDate -X github.com/javinizer/javinizer-go/internal/desktop.BuildDesktop=1" -o 'dist/Javinizer-KEEPWORDS.exe' ./cmd/javinizer
 
+      - name: Black-box test built EXE title to r18dev
+        shell: pwsh
+        run: |
+          $configPath = Join-Path $PWD 'evidence/blackbox-config.yaml'
+          Copy-Item 'internal/config/config.yaml.example' $configPath -Force
+          $yaml = Get-Content $configPath -Raw
+          $yaml = $yaml -replace 'file_format: <ID><IF:MULTIPART>-pt<PART></IF>', 'file_format: <ID><KEEPWORDS:SPECIAL|4K;PREFIX= - ;DELIM= ><IF:MULTIPART>-pt<PART></IF>'
+          $yaml = $yaml -replace 'output: "stdout,data/logs/javinizer.log"', 'output: "stderr,evidence/blackbox-javinizer.log"'
+          Set-Content -Path $configPath -Value $yaml -Encoding utf8
+
+          $title = '一ヶ月間の禁欲の果てに彼女のルームメイト2人と浮気SEXだけに没頭した彼女不在の3日間_SPECIAL_4K'
+          $exe = (Resolve-Path 'dist/Javinizer-KEEPWORDS.exe').Path
+          $stdoutPath = Join-Path $PWD 'evidence/binary-blackbox-stdout.txt'
+          $stderrPath = Join-Path $PWD 'evidence/binary-blackbox-stderr.txt'
+
+          & $exe --config $configPath --verbose scrape $title --scrapers r18dev 1> $stdoutPath 2> $stderrPath
+          $exitCode = $LASTEXITCODE
+          "binary_exit_code=$exitCode" | Out-File evidence/binary-blackbox-result.txt -Encoding utf8
+          "binary_command=Javinizer-KEEPWORDS.exe --config <evidence-config> --verbose scrape <known-title_SPECIAL_4K> --scrapers r18dev" | Out-File evidence/binary-blackbox-result.txt -Encoding utf8 -Append
+          "expected_catalog_id=SSIS-001" | Out-File evidence/binary-blackbox-result.txt -Encoding utf8 -Append
+
+          $stdout = if (Test-Path $stdoutPath) { Get-Content $stdoutPath -Raw } else { '' }
+          $stderr = if (Test-Path $stderrPath) { Get-Content $stderrPath -Raw } else { '' }
+          $combined = $stdout + "`n" + $stderr
+
+          $lookupLine = ($combined -split "`r?`n" | Where-Object { $_ -match 'web-title lookup input=' } | Select-Object -Last 1)
+          $resolvedLine = ($combined -split "`r?`n" | Where-Object { $_ -match 'title web lookup resolved .* -> SSIS-001' } | Select-Object -Last 1)
+          "lookup_line=$lookupLine" | Out-File evidence/binary-blackbox-result.txt -Encoding utf8 -Append
+          "resolved_line=$resolvedLine" | Out-File evidence/binary-blackbox-result.txt -Encoding utf8 -Append
+
+          if ($exitCode -ne 0) {
+            Get-Content evidence/binary-blackbox-result.txt
+            if (Test-Path $stderrPath) { Get-Content $stderrPath }
+            throw "built EXE scrape exited with $exitCode"
+          }
+          if ([string]::IsNullOrWhiteSpace($lookupLine)) {
+            throw 'built EXE did not emit the web-title lookup evidence line'
+          }
+          if ($lookupLine -match '(?i)SPECIAL|4K|FAKE-999') {
+            throw "built EXE leaked KEEPWORDS/false ID into cleaned web lookup: $lookupLine"
+          }
+          if ([string]::IsNullOrWhiteSpace($resolvedLine)) {
+            throw 'built EXE did not prove live title resolution to SSIS-001'
+          }
+          if ($combined -match 'No results from any scraper') {
+            throw 'built EXE reproduced the original no-results failure'
+          }
+          if ($combined -notmatch 'SSIS-001') {
+            throw 'built EXE output/logs do not contain expected catalog ID SSIS-001'
+          }
+
+          'blackbox_result=PASS' | Out-File evidence/binary-blackbox-result.txt -Encoding utf8 -Append
+          Get-Content evidence/binary-blackbox-result.txt
+
       - name: Verify executable and record hash
         shell: pwsh
         run: |
@@ -191,7 +245,7 @@ jobs:
         shell: pwsh
         run: |
           'verification_result=PASS' | Out-File evidence/result.txt -Encoding utf8
-          'meaning=deterministic E2E PASS + live public-web title-to-ID PASS + production-tag Windows EXE built' | Out-File evidence/result.txt -Encoding utf8 -Append
+          'meaning=deterministic worker E2E PASS + live public-web title-to-ID PASS + exact built Windows EXE black-box title-to-r18dev PASS' | Out-File evidence/result.txt -Encoding utf8 -Append
 
       - name: Upload Windows executable
         uses: actions/upload-artifact@v4
