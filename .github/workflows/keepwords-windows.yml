@@ -27,9 +27,9 @@ jobs:
       - name: Apply r18.dev title-search source patch
         shell: pwsh
         run: |
-          git apply --check .github/patches/title-search.patch
+          git apply --recount --check .github/patches/title-search.patch
           if ($LASTEXITCODE -ne 0) { throw 'title-search patch check failed' }
-          git apply .github/patches/title-search.patch
+          git apply --recount .github/patches/title-search.patch
           if ($LASTEXITCODE -ne 0) { throw 'title-search patch apply failed' }
           git diff --check
           if ($LASTEXITCODE -ne 0) { throw 'title-search patch produced invalid diff' }
