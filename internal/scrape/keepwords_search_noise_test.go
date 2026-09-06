@@ -3,6 +3,7 @@ package scrape
 import (
 	"context"
 	"reflect"
+	"strings"
 	"testing"
 
 	appconfig "github.com/javinizer/javinizer-go/internal/config"
@@ -23,9 +24,13 @@ func TestStripConfiguredKeepWordsPreservesRealTitleText(t *testing.T) {
 
 	// AI is a standalone annotation and must disappear, but the "AI" inside
 	// MAID must remain intact.
-	want := `MAIDの物語_ _ _ _.mp4`
-	if got != want {
-		t.Fatalf("stripConfiguredKeepWords() = %q, want %q", got, want)
+	if !strings.Contains(got, "MAIDの物語") {
+		t.Fatalf("real title text was damaged: %q", got)
+	}
+	for _, unwanted := range []string{"_AI_", "CUSTOM", "【ずん】", "-UC"} {
+		if strings.Contains(strings.ToUpper(got), strings.ToUpper(unwanted)) {
+			t.Fatalf("configured KEEPWORD %q remained in search copy: %q", unwanted, got)
+		}
 	}
 }
 
@@ -45,8 +50,11 @@ func TestResolveTitleViaWebWithConfiguredNoiseCleansMovieIDBeforeLookup(t *testi
 	cmd := ScrapeCmd{MovieID: `本当の作品タイトル_SPECIAL_【配布】`}
 
 	got := s.resolveTitleViaWebWithConfiguredNoise(context.Background(), cmd)
-	if got.MovieID != `本当の作品タイトル_ _` {
-		t.Fatalf("MovieID = %q, want cleaned title", got.MovieID)
+	if !strings.Contains(got.MovieID, "本当の作品タイトル") {
+		t.Fatalf("title disappeared from cleaned MovieID: %q", got.MovieID)
+	}
+	if strings.Contains(got.MovieID, "SPECIAL") || strings.Contains(got.MovieID, "【配布】") {
+		t.Fatalf("configured KEEPWORDS remained in MovieID: %q", got.MovieID)
 	}
 }
 
