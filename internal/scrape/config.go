@@ -96,13 +96,39 @@ func (a *translationAdapter) Translate(ctx context.Context, movie *models.Movie)
 	return warning, true, output
 }
 
+func extractKeepWordsFromOutputConfig(output config.OutputConfig) []string {
+	templates := []string{output.Template.FileFormat, output.Template.FolderFormat}
+	templates = append(templates, output.Template.SubfolderFormat...)
+
+	seen := make(map[string]struct{})
+	var words []string
+	for _, template := range templates {
+		for _, word := range extractKeepWordsFromTemplate(template) {
+			key := normalizeKeepWordKey(word)
+			if key == "" {
+				continue
+			}
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			words = append(words, word)
+		}
+	}
+	return words
+}
+
+func normalizeKeepWordKey(word string) string {
+	return strings.ToLower(strings.TrimSpace(norm.NFKC.String(word)))
+}
+
 // ConfigFromAppConfig extracts Scrape-relevant fields from the application config.
 //
 // Config-bridge reads: cfg.Scrapers.Priority, cfg.Metadata.Translation.Enabled,
 // cfg.Metadata.Translation.TargetLanguage, cfg.Metadata.Translation.SettingsHash(),
 // cfg.Metadata.ActressDatabase.Enabled, cfg.Scrapers.ScrapeActress,
 // cfg.Scrapers.UserAgent, cfg.Scrapers.Referer, cfg.System.TempDir,
-// cfg.Output.Template.FileFormat (KEEPWORDS entries are search-only noise).
+// and every output naming template containing KEEPWORDS.
 func ConfigFromAppConfig(cfg *config.Config) *Config {
 	if cfg == nil {
 		return nil
@@ -116,7 +142,7 @@ func ConfigFromAppConfig(cfg *config.Config) *Config {
 		UserAgent:             cfg.Scrapers.UserAgent,
 		Referer:               cfg.Scrapers.Referer,
 		TempDir:               cfg.System.TempDir,
-		FilenameKeepWords:     extractKeepWordsFromTemplate(cfg.Output.Template.FileFormat),
+		FilenameKeepWords:     extractKeepWordsFromOutputConfig(cfg.Output),
 	}
 	if c.TranslationEnabled {
 		c.TranslationSettingsHash = cfg.Metadata.Translation.SettingsHash()
