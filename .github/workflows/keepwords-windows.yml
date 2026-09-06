@@ -21,6 +21,14 @@ jobs:
           git diff --check
           git diff -- internal/template/engine.go web/frontend/src/lib/components/settings/sections/OutputSettingsSection.svelte
 
+      - name: Apply r18.dev title-search source patch
+        shell: pwsh
+        run: |
+          git apply --check .github/patches/title-search.patch
+          git apply .github/patches/title-search.patch
+          git diff --check
+          git diff -- internal/r18devdump/store.go internal/r18devdump/import.go
+
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
@@ -60,6 +68,10 @@ jobs:
       - name: Test KEEPWORDS template package
         shell: pwsh
         run: go test -tags keepwords ./internal/template
+
+      - name: Test r18.dev title search
+        shell: pwsh
+        run: go test -tags keepwords ./internal/r18devdump ./internal/scraper/r18dev
 
       - name: Install frontend dependencies
         shell: pwsh
