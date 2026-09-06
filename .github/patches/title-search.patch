@@ -1,7 +1,7 @@
 diff --git a/internal/r18devdump/store.go b/internal/r18devdump/store.go
 --- a/internal/r18devdump/store.go
 +++ b/internal/r18devdump/store.go
-@@ -199,17 +199,19 @@ func (s *Store) MatchByDisplayID(ctx context.Context, id string) ([]models.DumpM
+@@ -199,17 +199,18 @@ func (s *Store) MatchByDisplayID(ctx context.Context, id string) ([]models.DumpM
  	return matches, nil
  }
  
@@ -28,7 +28,7 @@ diff --git a/internal/r18devdump/store.go b/internal/r18devdump/store.go
  	if norm == "" {
  		return nil, models.ErrDumpMiss
  	}
-@@ -244,11 +246,35 @@ func (s *Store) LookupMovie(ctx context.Context, dvdID string) (*models.DumpMovi
+@@ -244,10 +245,34 @@ func (s *Store) LookupMovie(ctx context.Context, dvdID string) (*models.DumpMovi
  		&siteID, &serviceCode,
  	)
  	if errors.Is(err, sql.ErrNoRows) {
@@ -70,7 +70,7 @@ diff --git a/internal/r18devdump/store.go b/internal/r18devdump/store.go
 diff --git a/internal/r18devdump/import.go b/internal/r18devdump/import.go
 --- a/internal/r18devdump/import.go
 +++ b/internal/r18devdump/import.go
-@@ -180,6 +180,8 @@ func Import(ctx context.Context, r io.Reader, path string, opts ImportOptions) (I
+@@ -180,7 +180,9 @@ func Import(ctx context.Context, r io.Reader, path string, opts ImportOptions) (I
  		schema += s.create + ";"
  	}
  	schema += `CREATE INDEX idx_videos_dvd_id_norm ON videos(dvd_id_norm);
