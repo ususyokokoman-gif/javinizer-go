@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/javinizer/javinizer-go/internal/logging"
 	"golang.org/x/text/unicode/norm"
 )
 
@@ -103,9 +104,10 @@ func isASCIIAlnum(s string) bool {
 	return true
 }
 
-// resolveTitleViaWebWithConfiguredNoise removes the user's KEEPWORDS from the
-// search query before the normal web-first title resolver runs. Catalog IDs are
-// never modified.
+// resolveTitleViaWebWithConfiguredNoise owns filename-to-query resolution for
+// unmatched files. It removes configured KEEPWORDS from a search-only copy,
+// recognizes a single real catalog ID embedded in that cleaned filename, and
+// otherwise sends the cleaned title to the normal web-first resolver.
 func (s *Scraper) resolveTitleViaWebWithConfiguredNoise(ctx context.Context, cmd ScrapeCmd) ScrapeCmd {
 	query := strings.TrimSpace(cmd.MovieID)
 	if query == "" || looksLikeCatalogID(query) {
@@ -117,8 +119,26 @@ func (s *Scraper) resolveTitleViaWebWithConfiguredNoise(ctx context.Context, cmd
 		words = s.cfg.FilenameKeepWords
 	}
 	cleaned := stripConfiguredKeepWords(query, words)
-	if cleaned != "" {
-		cmd.MovieID = cleaned
+	if cleaned == "" {
+		cleaned = query
 	}
+
+	if cleaned != query {
+		logging.Infof("[scrape] web-title cleanup %q -> %q", truncateRunes(query, 100), truncateRunes(cleaned, 100))
+	}
+
+	// A normal filename can include a real ID plus descriptive text, e.g.
+	// "ABW-123 title 4K". Once KEEPWORDS are removed, a single plausible ID is
+	// safe to hand directly to the normal scrapers without a general web search.
+	// Multiple candidates stay on the title-search path rather than guessing.
+	if ids := extractCatalogCandidates(cleaned); len(ids) == 1 {
+		logging.Infof("[scrape] cleaned filename contains catalog ID %s", ids[0])
+		cmd.MovieID = ids[0]
+		return cmd
+	}
+
+	cmd.MovieID = cleaned
+	normalized := normalizeTitleForWebSearch(cleaned)
+	logging.Infof("[scrape] web-title lookup input=%q normalized=%q", truncateRunes(cleaned, 100), truncateRunes(normalized, 100))
 	return s.resolveTitleViaWeb(ctx, cmd)
 }
