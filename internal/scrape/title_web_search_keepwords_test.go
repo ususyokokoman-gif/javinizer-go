@@ -22,12 +22,16 @@ type titleWebFakeHTTPClient struct {
 	mu        sync.Mutex
 	responses []titleWebFakeResponse
 	calls     int
+	queries   []string
 }
 
-func (f *titleWebFakeHTTPClient) Do(_ *http.Request) (*http.Response, error) {
+func (f *titleWebFakeHTTPClient) Do(req *http.Request) (*http.Response, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
+	if req != nil && req.URL != nil {
+		f.queries = append(f.queries, req.URL.Query().Get("q"))
+	}
 	idx := f.calls - 1
 	resp := titleWebFakeResponse{status: http.StatusOK}
 	if idx < len(f.responses) {
@@ -60,6 +64,33 @@ func TestResolveTitleViaWebFindsCatalogIDFromSearchResult(t *testing.T) {
 
 	require.Equal(t, "ABW-123", got.MovieID)
 	require.Equal(t, 1, client.calls)
+}
+
+func TestConfiguredKeepWordsAreAbsentFromActualWebQuery(t *testing.T) {
+	client := &titleWebFakeHTTPClient{responses: []titleWebFakeResponse{{
+		status: http.StatusOK,
+		body: `<html><body><div class="result">
+			<a class="result__a" href="https://javdb.com/v/example">ABW-123 本当の作品タイトル</a>
+			<a class="result__snippet">本当の作品タイトル ABW-123</a>
+		</div></body></html>`,
+	}}}
+	s := &Scraper{
+		httpClient: client,
+		cfg: &Config{FilenameKeepWords: []string{"SPECIAL", "【配布】", "CUSTOMTAG"}},
+	}
+
+	cmd := ScrapeCmd{MovieID: "本当の作品タイトル_SPECIAL_【配布】_CUSTOMTAG_4K"}
+	got := s.resolveTitleViaWebWithConfiguredNoise(context.Background(), cmd)
+
+	require.Equal(t, "ABW-123", got.MovieID)
+	require.NotEmpty(t, client.queries)
+	for _, query := range client.queries {
+		require.NotContains(t, query, "SPECIAL")
+		require.NotContains(t, query, "配布")
+		require.NotContains(t, query, "CUSTOMTAG")
+		require.NotContains(t, strings.ToLower(query), "4k")
+		require.Contains(t, query, "本当の作品タイトル")
+	}
 }
 
 func TestResolveTitleViaWebSkipsNormalCatalogID(t *testing.T) {
