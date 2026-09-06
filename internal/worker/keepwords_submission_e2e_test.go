@@ -21,8 +21,8 @@ import (
 
 type submissionMatcher struct{ result string }
 
-func (m *submissionMatcher) MatchString(string) string                          { return m.result }
-func (m *submissionMatcher) Match([]models.FileMatchInfo) []matcher.MatchResult { return nil }
+func (m *submissionMatcher) MatchString(string) string                           { return m.result }
+func (m *submissionMatcher) Match([]models.FileMatchInfo) []matcher.MatchResult  { return nil }
 func (m *submissionMatcher) MatchFile(models.FileMatchInfo) *matcher.MatchResult { return nil }
 
 type submissionHTTP struct {
@@ -35,7 +35,7 @@ func (h *submissionHTTP) Do(req *http.Request) (*http.Response, error) {
 	h.queries = append(h.queries, req.URL.Query().Get("q"))
 	h.mu.Unlock()
 
-	body := `<html><body><div class="result"><a class="result__a" href="https://r18.dev/example/ABW-123">本当の作品タイトル ABW-123</a><div class="result__snippet">本当の作品タイトル 品番 ABW-123</div></div></body></html>`
+	body := `<html><body><div class="result"><a class="result__a" href="https://r18.dev/example/ABW-123">MAID 本当の作品タイトル ABW-123</a><div class="result__snippet">MAID 本当の作品タイトル 品番 ABW-123</div></div></body></html>`
 	return &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     make(http.Header),
@@ -104,7 +104,9 @@ func submissionAggregate(results []*models.ScraperResult) (*models.Movie, *aggre
 }
 
 func TestSubmissionE2E_UnmatchedFilenameKeepWordsToResolvedCatalogID(t *testing.T) {
-	const filePath = `C:\videos\本当の作品タイトル_SPECIAL_4K.mp4`
+	const filenameWithoutExt = `MAID 本当の作品タイトル_SPECIAL_4K_8K_VR_AI_字幕_中文字幕_-UC_UNCENSORED`
+	const filePath = `C:\videos\MAID 本当の作品タイトル_SPECIAL_4K_8K_VR_AI_字幕_中文字幕_-UC_UNCENSORED.mp4`
+	keepWords := []string{"SPECIAL", "4K", "8K", "VR", "AI", "字幕", "中文字幕", "-UC", "UNCENSORED"}
 
 	// Deliberately make the legacy second-pass matcher return a false ID. The
 	// worker must ignore it for an unmatched file and hand the complete title to
@@ -116,15 +118,15 @@ func TestSubmissionE2E_UnmatchedFilenameKeepWordsToResolvedCatalogID(t *testing.
 	if fromMatcher {
 		t.Fatalf("unmatched filename was incorrectly marked as matcher-derived: %#v", cmd)
 	}
-	if cmd.MovieID != "本当の作品タイトル_SPECIAL_4K" {
-		t.Fatalf("worker handoff MovieID = %q, want complete extension-stripped filename", cmd.MovieID)
+	if cmd.MovieID != filenameWithoutExt {
+		t.Fatalf("worker handoff MovieID = %q, want %q", cmd.MovieID, filenameWithoutExt)
 	}
 
 	appCfg := &appconfig.Config{}
-	appCfg.Output.Template.FileFormat = `<ID><KEEPWORDS:SPECIAL|4K;PREFIX= - ;DELIM= > - <TITLE>`
+	appCfg.Output.Template.FileFormat = `<ID><KEEPWORDS:SPECIAL|4K|8K|VR|AI|字幕|中文字幕|-UC|UNCENSORED;PREFIX= - ;DELIM= > - <TITLE>`
 	scrapeCfg := scrape.ConfigFromAppConfig(appCfg)
-	if scrapeCfg == nil || len(scrapeCfg.FilenameKeepWords) != 2 {
-		t.Fatalf("KEEPWORDS config bridge = %#v", scrapeCfg)
+	if scrapeCfg == nil || len(scrapeCfg.FilenameKeepWords) != len(keepWords) {
+		t.Fatalf("KEEPWORDS config bridge = %#v, want %d words", scrapeCfg, len(keepWords))
 	}
 
 	httpCapture := &submissionHTTP{}
@@ -152,11 +154,16 @@ func TestSubmissionE2E_UnmatchedFilenameKeepWordsToResolvedCatalogID(t *testing.
 	}
 	for _, q := range queries {
 		upper := strings.ToUpper(q)
-		if strings.Contains(upper, "SPECIAL") || strings.Contains(upper, "4K") || strings.Contains(upper, "FAKE-999") {
-			t.Fatalf("web query leaked annotation/false matcher ID: %q", q)
+		for _, unwanted := range append(append([]string(nil), keepWords...), "FAKE-999") {
+			if strings.Contains(upper, strings.ToUpper(unwanted)) {
+				t.Fatalf("web query leaked annotation/false matcher ID %q: %q", unwanted, q)
+			}
 		}
 		if !strings.Contains(q, "本当の作品タイトル") {
 			t.Fatalf("web query lost the real title: %q", q)
+		}
+		if !strings.Contains(strings.ToUpper(q), "MAID") {
+			t.Fatalf("short KEEPWORD AI damaged real title token MAID: %q", q)
 		}
 	}
 }
