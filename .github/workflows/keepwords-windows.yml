@@ -35,6 +35,17 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'title-search patch produced invalid diff' }
           git diff -- internal/r18devdump/store.go internal/r18devdump/import.go
 
+      - name: Apply web-first title resolver hook
+        shell: pwsh
+        run: |
+          git apply --recount --check .github/patches/title-web-search.patch
+          if ($LASTEXITCODE -ne 0) { throw 'title web-search patch check failed' }
+          git apply --recount .github/patches/title-web-search.patch
+          if ($LASTEXITCODE -ne 0) { throw 'title web-search patch apply failed' }
+          git diff --check
+          if ($LASTEXITCODE -ne 0) { throw 'title web-search patch produced invalid diff' }
+          git diff -- internal/scrape/scrape.go
+
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
@@ -71,13 +82,20 @@ jobs:
           npm --version
           gcc --version
 
+      - name: Format patched Go sources
+        shell: pwsh
+        run: |
+          gofmt -w internal/scrape/scrape.go internal/scrape/title_web_search.go internal/scrape/title_web_search_keepwords_test.go internal/r18devdump/store.go internal/r18devdump/import.go
+          git diff --check
+          if ($LASTEXITCODE -ne 0) { throw 'gofmt produced invalid diff' }
+
       - name: Test KEEPWORDS template package
         shell: pwsh
         run: go test -tags keepwords ./internal/template
 
-      - name: Test r18.dev title search
+      - name: Test web-first title resolution and r18.dev lookup
         shell: pwsh
-        run: go test -tags keepwords ./internal/r18devdump ./internal/scraper/r18dev
+        run: go test -tags keepwords ./internal/scrape ./internal/r18devdump ./internal/scraper/r18dev
 
       - name: Install frontend dependencies
         shell: pwsh
@@ -106,7 +124,7 @@ jobs:
           New-Item -ItemType Directory -Path dist -Force | Out-Null
           $commit = git rev-parse --short HEAD
           $buildDate = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
-          go build -trimpath -tags 'desktop,production' -ldflags "-w -s -H windowsgui -X github.com/javinizer/javinizer-go/internal/version.Version=keepwords -X github.com/javinizer/javinizer-go/internal/version.Commit=$commit -X github.com/javinizer/javinizer-go/internal/version.BuildDate=$buildDate -X github.com/javinizer/javinizer-go/internal/desktop.BuildDesktop=1" -o 'dist/Javinizer-KEEPWORDS.exe' ./cmd/javinizer
+          go build -trimpath -tags 'desktop,production' -ldflags "-w -s -H windowsgui -X github.com/javinizer/javinizer-go/internal/version.Version=keepwords-webtitle -X github.com/javinizer/javinizer-go/internal/version.Commit=$commit -X github.com/javinizer/javinizer-go/internal/version.BuildDate=$buildDate -X github.com/javinizer/javinizer-go/internal/desktop.BuildDesktop=1" -o 'dist/Javinizer-KEEPWORDS.exe' ./cmd/javinizer
 
       - name: Verify artifact exists
         shell: pwsh
