@@ -7,9 +7,9 @@ diff --git a/internal/scrape/scrape.go b/internal/scrape/scrape.go
  	}
 +
 +	// A filename with no extractable catalog ID reaches the scrape layer as its
-+	// extension-stripped title. Resolve that title on the public web first and
-+	// turn a strong search hit into a normal catalog-ID scrape.
-+	cmd = s.resolveTitleViaWeb(ctx, cmd)
++	// extension-stripped title. Remove configured KEEPWORDS from the search-only
++	// copy, then resolve that title on the public web before normal scraping.
++	cmd = s.resolveTitleViaWebWithConfiguredNoise(ctx, cmd)
  
  	var actressRepo database.ActressRepositoryInterface
  	if s.actressRepo != nil {
