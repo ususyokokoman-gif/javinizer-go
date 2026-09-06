@@ -19,6 +19,7 @@ type Config struct {
 	UserAgent               string
 	Referer                 string
 	TempDir                 string
+	FilenameKeepWords       []string
 }
 
 // Translator is the interface for applying metadata translation to a scraped Movie.
@@ -100,7 +101,8 @@ func (a *translationAdapter) Translate(ctx context.Context, movie *models.Movie)
 // Config-bridge reads: cfg.Scrapers.Priority, cfg.Metadata.Translation.Enabled,
 // cfg.Metadata.Translation.TargetLanguage, cfg.Metadata.Translation.SettingsHash(),
 // cfg.Metadata.ActressDatabase.Enabled, cfg.Scrapers.ScrapeActress,
-// cfg.Scrapers.UserAgent, cfg.Scrapers.Referer, cfg.System.TempDir
+// cfg.Scrapers.UserAgent, cfg.Scrapers.Referer, cfg.System.TempDir,
+// cfg.Output.Template.FileFormat (KEEPWORDS entries are search-only noise).
 func ConfigFromAppConfig(cfg *config.Config) *Config {
 	if cfg == nil {
 		return nil
@@ -114,6 +116,7 @@ func ConfigFromAppConfig(cfg *config.Config) *Config {
 		UserAgent:             cfg.Scrapers.UserAgent,
 		Referer:               cfg.Scrapers.Referer,
 		TempDir:               cfg.System.TempDir,
+		FilenameKeepWords:     extractKeepWordsFromTemplate(cfg.Output.Template.FileFormat),
 	}
 	if c.TranslationEnabled {
 		c.TranslationSettingsHash = cfg.Metadata.Translation.SettingsHash()
