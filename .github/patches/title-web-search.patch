@@ -13,3 +13,15 @@ diff --git a/internal/scrape/scrape.go b/internal/scrape/scrape.go
  
  	var actressRepo database.ActressRepositoryInterface
  	if s.actressRepo != nil {
+diff --git a/internal/scrape/title_web_search.go b/internal/scrape/title_web_search.go
+--- a/internal/scrape/title_web_search.go
++++ b/internal/scrape/title_web_search.go
+@@ -325,7 +325,7 @@ func chooseCatalogCandidate(query string, results []titleWebSearchResult) (string
+ 	}
+ 	if len(ranked) > 1 {
+ 		margin := ranked[0].Score - ranked[1].Score
+-		if margin < 0.65 && ranked[1].Score >= ranked[0].Score*0.85 {
++		if margin < 1.0 && ranked[1].Score >= ranked[0].Score*0.85 {
+ 			return "", false
+ 		}
+ 	}
