@@ -240,11 +240,14 @@ try {
     }
     "job_id=$jobID" | Out-File $apiResult -Encoding utf8 -Append
 
+    $jobUri = '{0}/api/v1/batch/{1}?include_data=true' -f $baseURL, $jobID
+    "poll_uri=$jobUri" | Out-File $apiResult -Encoding utf8 -Append
+
     $job = $null
     $terminal = $false
     for ($i = 0; $i -lt 180; $i++) {
         Start-Sleep -Seconds 1
-        $job = Invoke-RestMethod -Method Get -Uri "$baseURL/api/v1/batch/$jobID?include_data=true" -Headers $headers -TimeoutSec 15
+        $job = Invoke-RestMethod -Method Get -Uri $jobUri -Headers $headers -TimeoutSec 15
         if ($job.status -in @("completed", "failed", "cancelled")) {
             $terminal = $true
             break
