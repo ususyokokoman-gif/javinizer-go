@@ -34,12 +34,17 @@ func TestStripConfiguredKeepWordsPreservesRealTitleText(t *testing.T) {
 	}
 }
 
-func TestConfigFromAppConfigCarriesKeepWords(t *testing.T) {
+func TestConfigFromAppConfigCarriesKeepWordsFromAllOutputTemplates(t *testing.T) {
 	cfg := &appconfig.Config{}
 	cfg.Output.Template.FileFormat = `<ID><KEEPWORDS:FOO|BAR|中文字幕;PREFIX= - ;DELIM= >`
+	cfg.Output.Template.FolderFormat = `<KEEPWORDS:BAZ|foo>`
+	cfg.Output.Template.SubfolderFormat = []string{
+		`<STUDIO>`,
+		`<KEEPWORDS:QUX|【配布】>`,
+	}
 
 	got := ConfigFromAppConfig(cfg)
-	want := []string{"FOO", "BAR", "中文字幕"}
+	want := []string{"FOO", "BAR", "中文字幕", "BAZ", "QUX", "【配布】"}
 	if got == nil || !reflect.DeepEqual(got.FilenameKeepWords, want) {
 		t.Fatalf("FilenameKeepWords = %#v, want %#v", got.FilenameKeepWords, want)
 	}
