@@ -28,7 +28,25 @@ func getAuthStatus(rt *core.APIRuntime) gin.HandlerFunc {
 			return
 		}
 		deps := rt.Deps()
-		if deps == nil || deps.Auth == nil {
+		if deps == nil {
+			c.JSON(http.StatusServiceUnavailable, contracts.ErrorResponse{Error: "authentication is unavailable"})
+			return
+		}
+
+		// The embedded desktop API is bound to 127.0.0.1 and desktop-local
+		// requests are authorized without credentials by the auth middleware.
+		// Report that same effective state here so the frontend enters the main
+		// application directly instead of rendering setup/login screens.
+		if isDesktopLocalRequest(c.Request) {
+			c.JSON(http.StatusOK, contracts.AuthStatusResponse{
+				Initialized:   true,
+				Authenticated: true,
+				Username:      "local",
+			})
+			return
+		}
+
+		if deps.Auth == nil {
 			c.JSON(http.StatusServiceUnavailable, contracts.ErrorResponse{Error: "authentication is unavailable"})
 			return
 		}
@@ -284,7 +302,6 @@ func isSecureRequest(r *http.Request, cfg *core.SecurityNarrowConfig) bool {
 					return true
 				}
 			}
-		}
 	}
 	return false
 }
