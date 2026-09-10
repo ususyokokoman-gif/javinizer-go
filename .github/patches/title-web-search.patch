@@ -8,26 +8,8 @@ diff --git a/internal/scrape/scrape.go b/internal/scrape/scrape.go
 +
 +	// A filename with no extractable catalog ID reaches the scrape layer as its
 +	// extension-stripped title. Remove configured KEEPWORDS from the search-only
-+	// copy, then resolve that title on the public web before normal scraping.
++	// copy, then resolve that title on Google before normal scraping.
 +	cmd = s.resolveTitleViaWebWithConfiguredNoise(ctx, cmd)
  
  	var actressRepo database.ActressRepositoryInterface
  	if s.actressRepo != nil {
-diff --git a/internal/scrape/title_web_search.go b/internal/scrape/title_web_search.go
---- a/internal/scrape/title_web_search.go
-+++ b/internal/scrape/title_web_search.go
-@@ -34,7 +34,7 @@ var (
- 	// as 300MIUM-1234 that a conservative filename matcher may not recognize.
- 	webCatalogCandidateRE = regexp.MustCompile(`(?i)(?:\d{6}[-_]\d{2,3}-(?:1PON|10MU|CARIB)|FC2[\s_-]*PPV[\s_-]*\d{5,9}|h_\d+[a-z]+\d+|[A-Z0-9]{2,12}-\d{2,7}[A-Z]?|\b[A-Z]{2,8}\d{3,6}\b)`)
--	knownCatalogIDRE      = regexp.MustCompile(`(?i)^(?:\d{6}[-_]\d{2,3}-(?:1PON|10MU|CARIB)|FC2[\s_-]*PPV[\s_-]*\d{5,9}|h_\d+[a-z]+\d+|[A-Z0-9]{1,12}-\d{2,7}[A-Z]?|[A-Z]{1,8}\d{3,6})$`)
-+	knownCatalogIDRE      = regexp.MustCompile(`(?i)^(?:\d{6}[-_]\d{2,3}-(?:1PON|10MU|CARIB)|FC2[\s_-]*PPV[\s_-]*\d{5,9}|h_\d+[a-z]+\d+|\d+[a-z]{2,}\d+|[A-Z0-9]{1,12}-\d{2,7}[A-Z]?|[A-Z]{1,8}\d{3,6})$`)
- )
-@@ -325,7 +325,7 @@ func chooseCatalogCandidate(query string, results []titleWebSearchResult) (string
- 	}
- 	if len(ranked) > 1 {
- 		margin := ranked[0].Score - ranked[1].Score
--		if margin < 0.65 && ranked[1].Score >= ranked[0].Score*0.85 {
-+		if margin < 1.0 && ranked[1].Score >= ranked[0].Score*0.85 {
- 			return "", false
- 		}
- 	}
