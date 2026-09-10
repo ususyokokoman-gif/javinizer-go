@@ -11,51 +11,81 @@ jobs:
   diagnose:
     runs-on: windows-latest
     steps:
-      - name: Compare Google response modes
+      - name: Verify rendered Google search with Edge
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $title = '一ヶ月間の禁欲の果てに彼女のルームメイト2人と浮気SEXだけに没頭した彼女不在の3日間'
           $q = [Uri]::EscapeDataString($title)
-          $desktopUA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
-          $mobileUA = 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36'
-          $variants = @(
-            @{name='desktop'; url="https://www.google.com/search?hl=ja&num=10&filter=0&pws=0&safe=off&q=$q"; ua=$desktopUA},
-            @{name='gbv1'; url="https://www.google.com/search?hl=ja&gbv=1&num=10&filter=0&pws=0&safe=off&q=$q"; ua=$desktopUA},
-            @{name='mobile-gbv1'; url="https://www.google.com/search?hl=ja&gbv=1&num=10&filter=0&pws=0&safe=off&q=$q"; ua=$mobileUA},
-            @{name='udm14'; url="https://www.google.com/search?hl=ja&udm=14&num=10&filter=0&pws=0&safe=off&q=$q"; ua=$desktopUA},
-            @{name='firefox-client'; url="https://www.google.com/search?hl=ja&client=firefox-b-d&num=10&filter=0&pws=0&safe=off&q=$q"; ua=$desktopUA}
-          )
+          $url = "https://www.google.com/search?hl=ja&num=10&filter=0&pws=0&safe=off&q=$q"
 
-          foreach ($v in $variants) {
-            $out = Join-Path $env:RUNNER_TEMP ("google-{0}.html" -f $v.name)
-            $meta = & curl.exe -L --silent --show-error -A $v.ua -H 'Accept-Language: ja-JP,ja;q=0.9,en-US;q=0.7,en;q=0.5' -o $out -w '%{http_code}|%{url_effective}|%{content_type}' $v.url
-            if ($LASTEXITCODE -ne 0) { throw "curl failed for $($v.name): $LASTEXITCODE" }
-            $html = Get-Content $out -Raw -Encoding UTF8
-            $docTitle = ''
-            $tm = [regex]::Match($html, '<title[^>]*>(.*?)</title>', 'IgnoreCase,Singleline')
-            if ($tm.Success) { $docTitle = [System.Net.WebUtility]::HtmlDecode(($tm.Groups[1].Value -replace '\s+', ' ')).Trim() }
+          $edgeCandidates = @(
+            (Join-Path ${env:ProgramFiles(x86)} 'Microsoft\Edge\Application\msedge.exe'),
+            (Join-Path $env:ProgramFiles 'Microsoft\Edge\Application\msedge.exe')
+          ) | Where-Object { $_ -and (Test-Path $_) }
+          if (-not $edgeCandidates) { throw 'Microsoft Edge executable not found' }
+          $edge = $edgeCandidates[0]
+          "edge_path=$edge"
+          & $edge --version
+
+          $profile = Join-Path $env:RUNNER_TEMP 'javinizer-google-edge-profile'
+          New-Item -ItemType Directory -Path $profile -Force | Out-Null
+          $stdout = Join-Path $env:RUNNER_TEMP 'google-edge-dom.html'
+          $stderr = Join-Path $env:RUNNER_TEMP 'google-edge-stderr.txt'
+
+          $args = @(
+            '--headless=new',
+            '--disable-gpu',
+            '--no-first-run',
+            '--disable-default-apps',
+            '--disable-extensions',
+            '--disable-background-networking',
+            '--disable-sync',
+            "--user-data-dir=$profile",
+            '--virtual-time-budget=8000',
+            '--dump-dom',
+            $url
+          )
+          $p = Start-Process -FilePath $edge -ArgumentList $args -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+          "edge_exit_code=$($p.ExitCode)"
+          if ($p.ExitCode -ne 0) {
+            Get-Content $stderr -ErrorAction SilentlyContinue
+            throw "Edge headless failed with $($p.ExitCode)"
+          }
+
+          $html = Get-Content $stdout -Raw -Encoding UTF8
+          "body_bytes=$((Get-Item $stdout).Length)"
+          "contains_expected_id=$($html.IndexOf('SSIS-001',[StringComparison]::OrdinalIgnoreCase) -ge 0)"
+          "contains_expected_compact=$($html.IndexOf('SSIS001',[StringComparison]::OrdinalIgnoreCase) -ge 0)"
+          "contains_query_title=$($html.Contains($title))"
+          "h3_count=$(([regex]::Matches($html, '<h3\b', 'IgnoreCase')).Count)"
+          "dmm_count=$(([regex]::Matches($html, 'dmm', 'IgnoreCase')).Count)"
+          "fanza_count=$(([regex]::Matches($html, 'fanza', 'IgnoreCase')).Count)"
+          "r18_count=$(([regex]::Matches($html, 'r18\.dev', 'IgnoreCase')).Count)"
+          "javdb_count=$(([regex]::Matches($html, 'javdb', 'IgnoreCase')).Count)"
+          "captcha_marker=$($html -match '(?i)(unusual traffic|not a robot|異常なトラフィック|recaptcha)')"
+
+          $tm = [regex]::Match($html, '<title[^>]*>(.*?)</title>', 'IgnoreCase,Singleline')
+          if ($tm.Success) {
+            "document_title=$([System.Net.WebUtility]::HtmlDecode(($tm.Groups[1].Value -replace '\s+', ' ')).Trim())"
+          }
+
+          foreach ($needle in @('SSIS-001','SSIS001','dmm.co.jp','fanza','r18.dev','javdb')) {
+            $idx = $html.IndexOf($needle, [StringComparison]::OrdinalIgnoreCase)
+            if ($idx -ge 0) {
+              $start = [Math]::Max(0, $idx - 300)
+              $len = [Math]::Min(900, $html.Length - $start)
+              $snippet = $html.Substring($start, $len) -replace '\s+', ' '
+              "CONTEXT[$needle]=$snippet"
+            }
+          }
+
+          if ($html.IndexOf('SSIS-001',[StringComparison]::OrdinalIgnoreCase) -lt 0 -and $html.IndexOf('SSIS001',[StringComparison]::OrdinalIgnoreCase) -lt 0) {
             $plain = [regex]::Replace($html, '<script\b[^>]*>.*?</script>', ' ', 'IgnoreCase,Singleline')
             $plain = [regex]::Replace($plain, '<style\b[^>]*>.*?</style>', ' ', 'IgnoreCase,Singleline')
             $plain = [regex]::Replace($plain, '<[^>]+>', ' ')
             $plain = [System.Net.WebUtility]::HtmlDecode(($plain -replace '\s+', ' ')).Trim()
-            if ($plain.Length -gt 700) { $plain = $plain.Substring(0,700) }
-
-            "=== VARIANT $($v.name) ==="
-            "curl_meta=$meta"
-            "body_bytes=$((Get-Item $out).Length)"
-            "document_title=$docTitle"
-            "contains_expected_id=$($html.IndexOf('SSIS-001',[StringComparison]::OrdinalIgnoreCase) -ge 0)"
-            "contains_expected_compact=$($html.IndexOf('SSIS001',[StringComparison]::OrdinalIgnoreCase) -ge 0)"
-            "contains_query_title=$($html.Contains($title))"
-            "h3_count=$(([regex]::Matches($html, '<h3\b', 'IgnoreCase')).Count)"
-            "url_redirect_count=$(([regex]::Matches($html, '/url\?', 'IgnoreCase')).Count)"
-            "dmm_count=$(([regex]::Matches($html, 'dmm', 'IgnoreCase')).Count)"
-            "fanza_count=$(([regex]::Matches($html, 'fanza', 'IgnoreCase')).Count)"
-            "r18_count=$(([regex]::Matches($html, 'r18\.dev', 'IgnoreCase')).Count)"
-            "javdb_count=$(([regex]::Matches($html, 'javdb', 'IgnoreCase')).Count)"
-            "captcha_marker=$($html -match '(?i)(unusual traffic|not a robot|異常なトラフィック|recaptcha)')"
-            "consent_marker=$($html -match '(?i)(consent\.google|before you continue|同意する|すべて同意)')"
-            "javascript_marker=$($plain -match '(?i)(javascript|JavaScript)')"
+            if ($plain.Length -gt 1200) { $plain = $plain.Substring(0,1200) }
             "visible_prefix=$plain"
+            throw 'Rendered Google DOM did not contain expected catalog ID'
           }
