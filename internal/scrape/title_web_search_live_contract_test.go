@@ -62,9 +62,10 @@ func TestSubmissionLiveTitleToCatalogID(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
+	passed := 0
 
 	for _, tc := range cases {
-		t.Run(tc.id, func(t *testing.T) {
+		ok := t.Run(tc.id, func(t *testing.T) {
 			raw := tc.title + "_SPECIAL_4K_8K_VR_AI_字幕_中文字幕_-UC_UNCENSORED"
 			cleaned := stripConfiguredKeepWords(raw, cfg.FilenameKeepWords)
 			upperCleaned := strings.ToUpper(cleaned)
@@ -72,6 +73,17 @@ func TestSubmissionLiveTitleToCatalogID(t *testing.T) {
 				if strings.Contains(upperCleaned, strings.ToUpper(unwanted)) {
 					t.Fatalf("KEEPWORD %q remained before Google lookup: raw=%q cleaned=%q", unwanted, raw, cleaned)
 				}
+			}
+			normalized := normalizeTitleForWebSearch(cleaned)
+
+			// Probe one real Google response and log exactly what our HTML parser can
+			// see. This evidence distinguishes a bad query from a Google markup/parser
+			// problem and exposes the candidate IDs that the scorer receives.
+			probeResults, probeErr := s.fetchTitleWebSearch(ctx, "google", normalized)
+			t.Logf("LIVE_PROBE query=%q results=%d err=%v", normalized, len(probeResults), probeErr)
+			for i, result := range probeResults {
+				ids := extractCatalogCandidates(result.Title + " " + result.Snippet + " " + result.URL)
+				t.Logf("LIVE_PARSED_RESULT rank=%d title=%q snippet=%q url=%q candidate_ids=%v coverage=%.3f", i+1, truncateRunes(result.Title, 160), truncateRunes(result.Snippet, 220), truncateRunes(result.URL, 220), ids, queryCoverage(normalized, result.Title+" "+result.Snippet))
 			}
 
 			beforeHosts, beforeQueries := recorder.snapshot()
@@ -82,7 +94,7 @@ func TestSubmissionLiveTitleToCatalogID(t *testing.T) {
 
 			t.Logf("LIVE_CASE expected=%s raw=%q", tc.id, raw)
 			t.Logf("LIVE_CLEANED=%q", cleaned)
-			t.Logf("LIVE_NORMALIZED=%q", normalizeTitleForWebSearch(cleaned))
+			t.Logf("LIVE_NORMALIZED=%q", normalized)
 			t.Logf("LIVE_REQUEST_COUNT=%d", len(caseQueries))
 
 			if len(caseQueries) == 0 {
@@ -98,8 +110,8 @@ func TestSubmissionLiveTitleToCatalogID(t *testing.T) {
 						t.Fatalf("KEEPWORD %q leaked into Google q=%q", unwanted, q)
 					}
 				}
-				if !strings.Contains(q, tc.title) {
-					t.Fatalf("real title missing from Google q=%q", q)
+				if !strings.Contains(compactComparable(q), compactComparable(normalized)) {
+					t.Fatalf("normalized real title missing from Google q=%q", q)
 				}
 			}
 
@@ -108,6 +120,9 @@ func TestSubmissionLiveTitleToCatalogID(t *testing.T) {
 			}
 			t.Logf("LIVE_RESOLVED=%s", got.MovieID)
 		})
+		if ok {
+			passed++
+		}
 	}
 
 	hosts, _ := recorder.snapshot()
@@ -116,5 +131,8 @@ func TestSubmissionLiveTitleToCatalogID(t *testing.T) {
 			t.Fatalf("submission live test contacted non-Google host: %q", host)
 		}
 	}
-	t.Logf("LIVE_MATRIX_PASS=%d/%d", len(cases), len(cases))
+	if passed != len(cases) {
+		t.Fatalf("LIVE_MATRIX_FAIL=%d/%d passed", passed, len(cases))
+	}
+	t.Logf("LIVE_MATRIX_PASS=%d/%d", passed, len(cases))
 }
