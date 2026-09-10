@@ -1,0 +1,55 @@
+name: Google Search HTML Diagnostic
+
+on:
+  push:
+    branches: [feature/keepwords]
+    paths:
+      - '.github/workflows/google-search-diagnostic.yml'
+  workflow_dispatch:
+
+jobs:
+  diagnose:
+    runs-on: windows-latest
+    steps:
+      - name: Probe Google response
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $title = '一ヶ月間の禁欲の果てに彼女のルームメイト2人と浮気SEXだけに没頭した彼女不在の3日間'
+          $q = [Uri]::EscapeDataString($title)
+          $url = "https://www.google.com/search?hl=ja&num=10&filter=0&pws=0&safe=off&q=$q"
+          $ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+          $out = Join-Path $env:RUNNER_TEMP 'google.html'
+          & curl.exe -L --fail --silent --show-error -A $ua -H 'Accept-Language: ja-JP,ja;q=0.9,en-US;q=0.7,en;q=0.5' -o $out $url
+          if ($LASTEXITCODE -ne 0) { throw "curl failed: $LASTEXITCODE" }
+          $html = Get-Content $out -Raw -Encoding UTF8
+          "body_bytes=$((Get-Item $out).Length)"
+          "contains_expected_id=$($html.Contains('SSIS-001'))"
+          "contains_expected_compact=$($html.Contains('SSIS001'))"
+          "contains_title=$($html.Contains($title))"
+          "h3_count=$(([regex]::Matches($html, '<h3\b', 'IgnoreCase')).Count)"
+          "google_url_redirect_count=$(([regex]::Matches($html, 'href=[\"''][^\"'']*/url\?', 'IgnoreCase')).Count)"
+          "dmm_count=$(([regex]::Matches($html, 'dmm', 'IgnoreCase')).Count)"
+          "fanza_count=$(([regex]::Matches($html, 'fanza', 'IgnoreCase')).Count)"
+          "r18_count=$(([regex]::Matches($html, 'r18\.dev', 'IgnoreCase')).Count)"
+          "javdb_count=$(([regex]::Matches($html, 'javdb', 'IgnoreCase')).Count)"
+          $needles = @('SSIS-001','SSIS001','ssis-001','ssis001','dmm.co.jp','fanza','r18.dev','javdb')
+          foreach ($needle in $needles) {
+            $idx = $html.IndexOf($needle, [StringComparison]::OrdinalIgnoreCase)
+            if ($idx -ge 0) {
+              $start = [Math]::Max(0, $idx - 350)
+              $len = [Math]::Min(900, $html.Length - $start)
+              $snippet = $html.Substring($start, $len) -replace '\s+', ' '
+              "CONTEXT[$needle]=$snippet"
+            }
+          }
+          $hrefs = [regex]::Matches($html, 'href=[\"'']([^\"'']+)[\"'']', 'IgnoreCase')
+          $shown = 0
+          foreach ($m in $hrefs) {
+            $href = [System.Net.WebUtility]::HtmlDecode($m.Groups[1].Value)
+            if ($href -match '(?i)(dmm|fanza|r18\.dev|javdb|ssis)') {
+              "MATCHING_HREF=$href"
+              $shown++
+              if ($shown -ge 20) { break }
+            }
+          }
