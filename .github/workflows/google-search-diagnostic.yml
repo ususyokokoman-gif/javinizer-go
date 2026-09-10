@@ -11,45 +11,51 @@ jobs:
   diagnose:
     runs-on: windows-latest
     steps:
-      - name: Probe Google response
+      - name: Compare Google response modes
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $title = '一ヶ月間の禁欲の果てに彼女のルームメイト2人と浮気SEXだけに没頭した彼女不在の3日間'
           $q = [Uri]::EscapeDataString($title)
-          $url = "https://www.google.com/search?hl=ja&num=10&filter=0&pws=0&safe=off&q=$q"
-          $ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
-          $out = Join-Path $env:RUNNER_TEMP 'google.html'
-          & curl.exe -L --fail --silent --show-error -A $ua -H 'Accept-Language: ja-JP,ja;q=0.9,en-US;q=0.7,en;q=0.5' -o $out $url
-          if ($LASTEXITCODE -ne 0) { throw "curl failed: $LASTEXITCODE" }
-          $html = Get-Content $out -Raw -Encoding UTF8
-          "body_bytes=$((Get-Item $out).Length)"
-          "contains_expected_id=$($html.Contains('SSIS-001'))"
-          "contains_expected_compact=$($html.Contains('SSIS001'))"
-          "contains_title=$($html.Contains($title))"
-          "h3_count=$(([regex]::Matches($html, '<h3\b', 'IgnoreCase')).Count)"
-          "google_url_redirect_count=$(([regex]::Matches($html, 'href=[\"''][^\"'']*/url\?', 'IgnoreCase')).Count)"
-          "dmm_count=$(([regex]::Matches($html, 'dmm', 'IgnoreCase')).Count)"
-          "fanza_count=$(([regex]::Matches($html, 'fanza', 'IgnoreCase')).Count)"
-          "r18_count=$(([regex]::Matches($html, 'r18\.dev', 'IgnoreCase')).Count)"
-          "javdb_count=$(([regex]::Matches($html, 'javdb', 'IgnoreCase')).Count)"
-          $needles = @('SSIS-001','SSIS001','ssis-001','ssis001','dmm.co.jp','fanza','r18.dev','javdb')
-          foreach ($needle in $needles) {
-            $idx = $html.IndexOf($needle, [StringComparison]::OrdinalIgnoreCase)
-            if ($idx -ge 0) {
-              $start = [Math]::Max(0, $idx - 350)
-              $len = [Math]::Min(900, $html.Length - $start)
-              $snippet = $html.Substring($start, $len) -replace '\s+', ' '
-              "CONTEXT[$needle]=$snippet"
-            }
-          }
-          $hrefs = [regex]::Matches($html, 'href=[\"'']([^\"'']+)[\"'']', 'IgnoreCase')
-          $shown = 0
-          foreach ($m in $hrefs) {
-            $href = [System.Net.WebUtility]::HtmlDecode($m.Groups[1].Value)
-            if ($href -match '(?i)(dmm|fanza|r18\.dev|javdb|ssis)') {
-              "MATCHING_HREF=$href"
-              $shown++
-              if ($shown -ge 20) { break }
-            }
+          $desktopUA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+          $mobileUA = 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36'
+          $variants = @(
+            @{name='desktop'; url="https://www.google.com/search?hl=ja&num=10&filter=0&pws=0&safe=off&q=$q"; ua=$desktopUA},
+            @{name='gbv1'; url="https://www.google.com/search?hl=ja&gbv=1&num=10&filter=0&pws=0&safe=off&q=$q"; ua=$desktopUA},
+            @{name='mobile-gbv1'; url="https://www.google.com/search?hl=ja&gbv=1&num=10&filter=0&pws=0&safe=off&q=$q"; ua=$mobileUA},
+            @{name='udm14'; url="https://www.google.com/search?hl=ja&udm=14&num=10&filter=0&pws=0&safe=off&q=$q"; ua=$desktopUA},
+            @{name='firefox-client'; url="https://www.google.com/search?hl=ja&client=firefox-b-d&num=10&filter=0&pws=0&safe=off&q=$q"; ua=$desktopUA}
+          )
+
+          foreach ($v in $variants) {
+            $out = Join-Path $env:RUNNER_TEMP ("google-{0}.html" -f $v.name)
+            $meta = & curl.exe -L --silent --show-error -A $v.ua -H 'Accept-Language: ja-JP,ja;q=0.9,en-US;q=0.7,en;q=0.5' -o $out -w '%{http_code}|%{url_effective}|%{content_type}' $v.url
+            if ($LASTEXITCODE -ne 0) { throw "curl failed for $($v.name): $LASTEXITCODE" }
+            $html = Get-Content $out -Raw -Encoding UTF8
+            $docTitle = ''
+            $tm = [regex]::Match($html, '<title[^>]*>(.*?)</title>', 'IgnoreCase,Singleline')
+            if ($tm.Success) { $docTitle = [System.Net.WebUtility]::HtmlDecode(($tm.Groups[1].Value -replace '\s+', ' ')).Trim() }
+            $plain = [regex]::Replace($html, '<script\b[^>]*>.*?</script>', ' ', 'IgnoreCase,Singleline')
+            $plain = [regex]::Replace($plain, '<style\b[^>]*>.*?</style>', ' ', 'IgnoreCase,Singleline')
+            $plain = [regex]::Replace($plain, '<[^>]+>', ' ')
+            $plain = [System.Net.WebUtility]::HtmlDecode(($plain -replace '\s+', ' ')).Trim()
+            if ($plain.Length -gt 700) { $plain = $plain.Substring(0,700) }
+
+            "=== VARIANT $($v.name) ==="
+            "curl_meta=$meta"
+            "body_bytes=$((Get-Item $out).Length)"
+            "document_title=$docTitle"
+            "contains_expected_id=$($html.IndexOf('SSIS-001',[StringComparison]::OrdinalIgnoreCase) -ge 0)"
+            "contains_expected_compact=$($html.IndexOf('SSIS001',[StringComparison]::OrdinalIgnoreCase) -ge 0)"
+            "contains_query_title=$($html.Contains($title))"
+            "h3_count=$(([regex]::Matches($html, '<h3\b', 'IgnoreCase')).Count)"
+            "url_redirect_count=$(([regex]::Matches($html, '/url\?', 'IgnoreCase')).Count)"
+            "dmm_count=$(([regex]::Matches($html, 'dmm', 'IgnoreCase')).Count)"
+            "fanza_count=$(([regex]::Matches($html, 'fanza', 'IgnoreCase')).Count)"
+            "r18_count=$(([regex]::Matches($html, 'r18\.dev', 'IgnoreCase')).Count)"
+            "javdb_count=$(([regex]::Matches($html, 'javdb', 'IgnoreCase')).Count)"
+            "captcha_marker=$($html -match '(?i)(unusual traffic|not a robot|異常なトラフィック|recaptcha)')"
+            "consent_marker=$($html -match '(?i)(consent\.google|before you continue|同意する|すべて同意)')"
+            "javascript_marker=$($plain -match '(?i)(javascript|JavaScript)')"
+            "visible_prefix=$plain"
           }
