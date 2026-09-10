@@ -170,7 +170,7 @@
 					{/if}
 				</div>
 
-				{#if authenticated}
+				{#if authenticated && username !== 'local'}
 					<button
 						type="button"
 						class="flex shrink-0 items-center gap-2 px-2 py-2 rounded-md transition-all duration-200 hover:bg-accent hover:-translate-y-px hover:text-destructive sm:px-4"
