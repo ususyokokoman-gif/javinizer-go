@@ -19,12 +19,12 @@ jobs:
           $q = [Uri]::EscapeDataString($title)
           $url = "https://www.google.com/search?hl=ja&num=10&filter=0&pws=0&safe=off&q=$q"
 
-          $edgeCandidates = @(
+          $edgeCandidates = @(@(
             (Join-Path ${env:ProgramFiles(x86)} 'Microsoft\Edge\Application\msedge.exe'),
             (Join-Path $env:ProgramFiles 'Microsoft\Edge\Application\msedge.exe')
-          ) | Where-Object { $_ -and (Test-Path $_) }
-          if (-not $edgeCandidates) { throw 'Microsoft Edge executable not found' }
-          $edge = $edgeCandidates[0]
+          ) | Where-Object { $_ -and (Test-Path $_) })
+          if ($edgeCandidates.Count -lt 1) { throw 'Microsoft Edge executable not found' }
+          $edge = [string]$edgeCandidates[0]
           "edge_path=$edge"
           & $edge --version
 
