@@ -17,11 +17,11 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path evidence -Force | Out-Null
-          "submission_evidence_version=5" | Out-File evidence/manifest.txt -Encoding utf8
+          "submission_evidence_version=6" | Out-File evidence/manifest.txt -Encoding utf8
           "head_sha=$(git rev-parse HEAD)" | Out-File evidence/manifest.txt -Encoding utf8 -Append
           "branch=$(git branch --show-current)" | Out-File evidence/manifest.txt -Encoding utf8 -Append
           "production_build_tags=desktop,production" | Out-File evidence/manifest.txt -Encoding utf8 -Append
-          "distribution_gate=live web + deterministic E2E + exact built EXE CLI blackbox + exact built EXE API filename blackbox + tested/distributed EXE SHA256 identity" | Out-File evidence/manifest.txt -Encoding utf8 -Append
+          "distribution_gate=live web + deterministic E2E + exact built EXE CLI blackbox + exact built EXE authenticated API filename blackbox + exact built EXE desktop-local no-auth blackbox + security invariants + tested/distributed EXE SHA256 identity" | Out-File evidence/manifest.txt -Encoding utf8 -Append
 
       - name: Apply KEEPWORDS source patch
         shell: pwsh
@@ -123,6 +123,18 @@ jobs:
           }
           'PASS: submissione2e/submissionlive/keepwords tags only add tests; production source set is unchanged.' | Out-File evidence/source-tag-proof.txt -Encoding utf8
 
+      - name: Test desktop localhost no-auth security invariants
+        shell: pwsh
+        run: |
+          go test -v -tags 'desktop,production' ./internal/api/auth -run '^(TestDesktopLocalNoAuth_|TestAuthManager_DoesNotSatisfyAuthDisabler)' -count=1 2>&1 | Tee-Object -FilePath evidence/desktop-local-noauth-tests.txt
+          if ($LASTEXITCODE -ne 0) { throw 'desktop localhost no-auth security invariant tests failed' }
+
+      - name: Test non-desktop loopback still requires authentication
+        shell: pwsh
+        run: |
+          go test -v ./internal/api/auth -run '^TestNonDesktopLoopbackStillRequiresAuth$' -count=1 2>&1 | Tee-Object -FilePath evidence/non-desktop-auth-required.txt
+          if ($LASTEXITCODE -ne 0) { throw 'non-desktop loopback authentication invariant failed' }
+
       - name: Test KEEPWORDS template under production source tags
         shell: pwsh
         run: |
@@ -176,7 +188,7 @@ jobs:
           $buildDate = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
           go build -trimpath -tags 'desktop,production' -ldflags "-w -s -H windowsgui -X github.com/javinizer/javinizer-go/internal/version.Version=keepwords-webtitle -X github.com/javinizer/javinizer-go/internal/version.Commit=$commit -X github.com/javinizer/javinizer-go/internal/version.BuildDate=$buildDate -X github.com/javinizer/javinizer-go/internal/desktop.BuildDesktop=1" -o 'dist/Javinizer-KEEPWORDS.exe' ./cmd/javinizer
 
-      - name: Black-box verify exact built EXE via CLI and API filename path
+      - name: Black-box verify exact built EXE via CLI and authenticated API filename path
         shell: pwsh
         run: |
           & ./.github/scripts/verify_keepwords_windows_blackbox.ps1 -ExePath 'dist/Javinizer-KEEPWORDS.exe' -EvidenceDir 'evidence'
@@ -190,22 +202,66 @@ jobs:
           }
           Get-Content $summaryPath
 
-      - name: Verify executable hash equals black-box-tested executable
+      - name: Gate C exact built EXE desktop localhost without login
+        shell: pwsh
+        run: |
+          & ./.github/scripts/verify_desktop_noauth_blackbox.ps1 -ExePath 'dist/Javinizer-KEEPWORDS.exe' -EvidenceDir 'evidence'
+          $gateCPath = 'evidence/desktop-noauth/result.txt'
+          if (-not (Test-Path $gateCPath)) { throw 'desktop no-auth verifier did not produce result evidence' }
+          $gateC = Get-Content $gateCPath -Raw
+          foreach ($required in @(
+            'gate_c_result=PASS',
+            'auth_credentials_preexisting=false',
+            'auth_sessions_preexisting=false',
+            'auth_setup_called=false',
+            'auth_login_called=false',
+            'session_header_sent=false',
+            'authorization_header_sent=false',
+            'cookie_session_sent=false',
+            'auth_status_initialized=True',
+            'auth_status_authenticated=True',
+            'auth_status_username=local',
+            'auth_status_session_id_empty=True',
+            'auth_credentials_created=false',
+            'auth_sessions_created=false',
+            'protected_batch_without_auth=PASS',
+            'movie_id=SSIS-001',
+            'tested_exe_sha256='
+          )) {
+            if ($gateC.IndexOf($required, [System.StringComparison]::Ordinal) -lt 0) {
+              throw "Gate C evidence missing required proof: $required"
+            }
+          }
+          Get-Content $gateCPath
+
+      - name: Verify executable hash equals all black-box-tested executables
         shell: pwsh
         run: |
           if (-not (Test-Path 'dist/Javinizer-KEEPWORDS.exe')) { throw 'Javinizer-KEEPWORDS.exe was not created' }
-          if (-not (Test-Path 'evidence/blackbox-summary.txt')) { throw 'black-box summary evidence is missing' }
-          $hash = Get-FileHash 'dist/Javinizer-KEEPWORDS.exe' -Algorithm SHA256
-          $actualHash = $hash.Hash.ToLowerInvariant()
-          $testedHashLine = Get-Content 'evidence/blackbox-summary.txt' | Where-Object { $_ -match '^tested_exe_sha256=' } | Select-Object -First 1
-          if ([string]::IsNullOrWhiteSpace($testedHashLine)) { throw 'tested_exe_sha256 is missing from black-box evidence' }
-          $testedHash = ($testedHashLine -replace '^tested_exe_sha256=', '').Trim().ToLowerInvariant()
-          if ($testedHash -notmatch '^[0-9a-f]{64}$') { throw "invalid tested_exe_sha256 value: $testedHash" }
-          if ($actualHash -ne $testedHash) { throw "EXE identity mismatch: black-box tested=$testedHash current=$actualHash" }
+          if (-not (Test-Path 'evidence/blackbox-summary.txt')) { throw 'Gate A/B black-box summary evidence is missing' }
+          if (-not (Test-Path 'evidence/desktop-noauth/result.txt')) { throw 'Gate C black-box evidence is missing' }
+
+          $actualHash = (Get-FileHash 'dist/Javinizer-KEEPWORDS.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
+
+          $abHashLine = Get-Content 'evidence/blackbox-summary.txt' | Where-Object { $_ -match '^tested_exe_sha256=' } | Select-Object -First 1
+          if ([string]::IsNullOrWhiteSpace($abHashLine)) { throw 'Gate A/B tested_exe_sha256 is missing' }
+          $abHash = ($abHashLine -replace '^tested_exe_sha256=', '').Trim().ToLowerInvariant()
+
+          $cHashLine = Get-Content 'evidence/desktop-noauth/result.txt' | Where-Object { $_ -match '^tested_exe_sha256=' } | Select-Object -First 1
+          if ([string]::IsNullOrWhiteSpace($cHashLine)) { throw 'Gate C tested_exe_sha256 is missing' }
+          $cHash = ($cHashLine -replace '^tested_exe_sha256=', '').Trim().ToLowerInvariant()
+
+          foreach ($value in @($actualHash, $abHash, $cHash)) {
+            if ($value -notmatch '^[0-9a-f]{64}$') { throw "invalid SHA256 value: $value" }
+          }
+          if ($actualHash -ne $abHash) { throw "EXE identity mismatch: Gate A/B=$abHash current=$actualHash" }
+          if ($actualHash -ne $cHash) { throw "EXE identity mismatch: Gate C=$cHash current=$actualHash" }
+
           $item = Get-Item 'dist/Javinizer-KEEPWORDS.exe'
           "exe_name=$($item.Name)" | Out-File evidence/executable.txt -Encoding utf8
           "exe_bytes=$($item.Length)" | Out-File evidence/executable.txt -Encoding utf8 -Append
-          "blackbox_tested_exe_sha256=$testedHash" | Out-File evidence/executable.txt -Encoding utf8 -Append
+          "gate_ab_tested_exe_sha256=$abHash" | Out-File evidence/executable.txt -Encoding utf8 -Append
+          "gate_c_tested_exe_sha256=$cHash" | Out-File evidence/executable.txt -Encoding utf8 -Append
           "exe_sha256=$actualHash" | Out-File evidence/executable.txt -Encoding utf8 -Append
           "sha256_identity=PASS" | Out-File evidence/executable.txt -Encoding utf8 -Append
           "verified_head_sha=$(git rev-parse HEAD)" | Out-File evidence/executable.txt -Encoding utf8 -Append
@@ -215,7 +271,11 @@ jobs:
         shell: pwsh
         run: |
           'verification_result=PASS' | Out-File evidence/result.txt -Encoding utf8
-          'meaning=template PASS + deterministic worker E2E PASS + live public-web title-to-ID PASS + exact built Windows EXE CLI PASS + exact built Windows EXE API filename-to-ID PASS + tested/distributed EXE SHA256 identity PASS' | Out-File evidence/result.txt -Encoding utf8 -Append
+          'gate_a=PASS' | Out-File evidence/result.txt -Encoding utf8 -Append
+          'gate_b=PASS' | Out-File evidence/result.txt -Encoding utf8 -Append
+          'gate_c_desktop_local_noauth=PASS' | Out-File evidence/result.txt -Encoding utf8 -Append
+          'security_invariants=PASS' | Out-File evidence/result.txt -Encoding utf8 -Append
+          'meaning=template PASS + deterministic worker E2E PASS + live public-web title-to-ID PASS + exact built Windows EXE CLI PASS + exact built Windows EXE authenticated API filename-to-ID PASS + exact built Windows EXE desktop-local protected API without setup/login/session/token PASS + non-desktop auth remains fail-closed + all tested/distributed EXE SHA256 identity PASS' | Out-File evidence/result.txt -Encoding utf8 -Append
           'distribution_eligible=true' | Out-File evidence/result.txt -Encoding utf8 -Append
 
       - name: Upload Windows executable
