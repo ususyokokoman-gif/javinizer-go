@@ -302,6 +302,7 @@ func isSecureRequest(r *http.Request, cfg *core.SecurityNarrowConfig) bool {
 					return true
 				}
 			}
+		}
 	}
 	return false
 }
