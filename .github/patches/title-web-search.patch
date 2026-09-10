@@ -13,3 +13,15 @@ diff --git a/internal/scrape/scrape.go b/internal/scrape/scrape.go
  
  	var actressRepo database.ActressRepositoryInterface
  	if s.actressRepo != nil {
+diff --git a/internal/scrape/title_web_search.go b/internal/scrape/title_web_search.go
+--- a/internal/scrape/title_web_search.go
++++ b/internal/scrape/title_web_search.go
+@@ -89,7 +89,7 @@ func (s *Scraper) resolveTitleViaWeb(ctx context.Context, cmd ScrapeCmd) ScrapeCm
+ 		return cmd
+ 	}
+ 
+-	logging.Infof("[scrape] Google title lookup resolved %q -> %s", truncateRunes(title, 80), id)
++	logging.Infof("[scrape] title web lookup resolved %q -> %s", truncateRunes(title, 80), id)
+ 	cmd.MovieID = id
+ 	return cmd
+ }
