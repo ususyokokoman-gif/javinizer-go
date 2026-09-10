@@ -16,7 +16,7 @@ import (
 	"golang.org/x/text/unicode/norm"
 )
 
-const maxWebSearchBody = 2 << 20 // 2 MiB is enough for a search result page.
+const maxWebSearchBody = 2 << 20
 
 var (
 	videoExtensionRE = regexp.MustCompile(`(?i)\.(?:mp4|mkv|avi|wmv|mov|m4v|ts|webm)$`)
@@ -25,11 +25,8 @@ var (
 	domainTokenRE    = regexp.MustCompile(`(?i)^[a-z0-9][a-z0-9.-]*\.(?:com|net|org|tv|cc|me|xyz|to|jp)$`)
 	qualityTokenRE   = regexp.MustCompile(`(?i)^(?:[248]k(?:60fps)?|720p|1080p|2160p|4320p|fhd|uhd|hdr10?|dolbyvision|dv|hevc|h26[45]|x26[45]|av1|aac|flac|web[-_. ]?dl|webrip|bdrip|bluray|uncensored|uncen|leak|vr|ai|sub|subs|subtitle|字幕|中字|中文字幕|中文|无码)$`)
 
-	// Search-result candidate matching is deliberately a little broader than
-	// the filename matcher. Search snippets often contain catalog families such
-	// as 300MIUM-1234 that a conservative filename matcher may not recognize.
 	webCatalogCandidateRE = regexp.MustCompile(`(?i)(?:\d{6}[-_]\d{2,3}-(?:1PON|10MU|CARIB)|FC2[\s_-]*PPV[\s_-]*\d{5,9}|h_\d+[a-z]+\d+|[A-Z0-9]{2,12}-\d{2,7}[A-Z]?|\b[A-Z]{2,8}\d{3,6}\b)`)
-	knownCatalogIDRE      = regexp.MustCompile(`(?i)^(?:\d{6}[-_]\d{2,3}-(?:1PON|10MU|CARIB)|FC2[\s_-]*PPV[\s_-]*\d{5,9}|h_\d+[a-z]+\d+|[A-Z0-9]{1,12}-\d{2,7}[A-Z]?|[A-Z]{1,8}\d{3,6})$`)
+	knownCatalogIDRE      = regexp.MustCompile(`(?i)^(?:\d{6}[-_]\d{2,3}-(?:1PON|10MU|CARIB)|FC2[\s_-]*PPV[\s_-]*\d{5,9}|h_\d+[a-z]+\d+|\d+[a-z]{2,}\d+|[A-Z0-9]{1,12}-\d{2,7}[A-Z]?|[A-Z]{1,8}\d{3,6})$`)
 )
 
 var titleNoiseTokens = map[string]struct{}{
@@ -58,17 +55,11 @@ type scoredCatalogCandidate struct {
 	Score float64
 }
 
-// resolveTitleViaWeb turns a title-looking MovieID into a catalog ID before
-// normal scraper querying. A network/search failure is non-fatal: the original
-// query is preserved, so the existing scraper/dump fallbacks still run.
 func (s *Scraper) resolveTitleViaWeb(ctx context.Context, cmd ScrapeCmd) ScrapeCmd {
 	query := strings.TrimSpace(cmd.MovieID)
 	if query == "" || s == nil || s.httpClient == nil {
 		return cmd
 	}
-
-	// URLs already have a dedicated direct-page path. Real catalog IDs should
-	// also bypass web search entirely.
 	if isHTTPTitleInput(cmd.RawInput) || isHTTPTitleInput(query) || looksLikeCatalogID(query) {
 		return cmd
 	}
@@ -80,14 +71,14 @@ func (s *Scraper) resolveTitleViaWeb(ctx context.Context, cmd ScrapeCmd) ScrapeC
 
 	id, err := s.lookupCatalogIDOnWeb(ctx, title)
 	if err != nil {
-		logging.Debugf("[scrape] title web lookup did not resolve a catalog ID: %v", err)
+		logging.Infof("[scrape] Google title lookup failed for %q: %v", truncateRunes(title, 100), err)
 		return cmd
 	}
 	if id == "" {
 		return cmd
 	}
 
-	logging.Infof("[scrape] title web lookup resolved %q -> %s", truncateRunes(title, 80), id)
+	logging.Infof("[scrape] Google title lookup resolved %q -> %s", truncateRunes(title, 80), id)
 	cmd.MovieID = id
 	return cmd
 }
@@ -105,9 +96,6 @@ func looksLikeCatalogID(s string) bool {
 	return normalizeWebCatalogCandidate(s) != ""
 }
 
-// normalizeTitleForWebSearch removes common release/encode/subtitle noise while
-// retaining human title text. Unknown bracketed text is kept (without brackets)
-// because it may genuinely be part of a work title.
 func normalizeTitleForWebSearch(input string) string {
 	s := strings.TrimSpace(norm.NFKC.String(input))
 	s = videoExtensionRE.ReplaceAllString(s, "")
@@ -120,8 +108,6 @@ func normalizeTitleForWebSearch(input string) string {
 		return " " + inner + " "
 	})
 
-	// Filename separators are generally search noise once we know the input is
-	// title text rather than a catalog ID.
 	s = strings.NewReplacer(
 		"_", " ", "＿", " ", "|", " ", "｜", " ",
 		"-", " ", "–", " ", "—", " ", "―", " ",
@@ -164,109 +150,141 @@ func truncateRunes(s string, max int) string {
 	return string(r[:max])
 }
 
+// lookupCatalogIDOnWeb deliberately uses Google only. KEEPWORDS have already
+// been removed by resolveTitleViaWebWithConfiguredNoise before this function is
+// reached. Query variants remain Google queries; there is no other provider.
 func (s *Scraper) lookupCatalogIDOnWeb(ctx context.Context, title string) (string, error) {
-	// General search comes first, as requested. Site-hinted queries are retries,
-	// not the primary path, and help when adult results are poorly ranked.
 	queries := []string{
+		title,
 		title + " 品番",
+		title + " DMM",
 		title + " JAV",
-		title + " r18.dev",
-		title + " JavDB",
 	}
-	providers := []string{"duckduckgo", "bing"}
 	var lastErr error
 
 	for _, q := range queries {
-		for _, provider := range providers {
-			results, err := s.fetchTitleWebSearch(ctx, provider, q)
-			if err != nil {
-				lastErr = err
-				continue
-			}
-			if id, ok := chooseCatalogCandidate(title, results); ok {
-				return id, nil
-			}
+		results, err := s.fetchTitleWebSearch(ctx, "google", q)
+		if err != nil {
+			lastErr = err
+			logging.Infof("[scrape] Google search query=%q failed: %v", truncateRunes(q, 120), err)
+			continue
+		}
+		logging.Infof("[scrape] Google search query=%q results=%d", truncateRunes(q, 120), len(results))
+		if id, ok := chooseCatalogCandidate(title, results); ok {
+			return id, nil
 		}
 	}
 	if lastErr != nil {
 		return "", lastErr
 	}
-	return "", fmt.Errorf("no sufficiently strong catalog-ID candidate in web results")
+	return "", fmt.Errorf("Google returned no sufficiently strong catalog-ID candidate")
 }
 
 func (s *Scraper) fetchTitleWebSearch(ctx context.Context, provider, query string) ([]titleWebSearchResult, error) {
-	var endpoint string
-	switch provider {
-	case "duckduckgo":
-		endpoint = "https://html.duckduckgo.com/html/?q=" + url.QueryEscape(query)
-	case "bing":
-		endpoint = "https://www.bing.com/search?q=" + url.QueryEscape(query) + "&setlang=ja-JP"
-	default:
-		return nil, fmt.Errorf("unknown web search provider %q", provider)
+	if provider != "google" {
+		return nil, fmt.Errorf("unsupported web search provider %q; Google is the only provider", provider)
 	}
 
+	endpoint := "https://www.google.com/search?hl=ja&num=10&filter=0&pws=0&safe=off&q=" + url.QueryEscape(query)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err
 	}
-	ua := "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36"
+	ua := "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 	if s.cfg != nil && strings.TrimSpace(s.cfg.UserAgent) != "" {
 		ua = s.cfg.UserAgent
 	}
 	req.Header.Set("User-Agent", ua)
 	req.Header.Set("Accept", "text/html,application/xhtml+xml")
-	req.Header.Set("Accept-Language", "ja,en-US;q=0.8,en;q=0.6")
+	req.Header.Set("Accept-Language", "ja-JP,ja;q=0.9,en-US;q=0.7,en;q=0.5")
 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("%s search request failed: %w", provider, err)
+		return nil, fmt.Errorf("Google search request failed: %w", err)
 	}
 	if resp == nil {
-		return nil, fmt.Errorf("%s search returned nil response", provider)
+		return nil, fmt.Errorf("Google search returned nil response")
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("%s search returned HTTP %d", provider, resp.StatusCode)
+		return nil, fmt.Errorf("Google search returned HTTP %d", resp.StatusCode)
 	}
 
 	doc, err := goquery.NewDocumentFromReader(io.LimitReader(resp.Body, maxWebSearchBody))
 	if err != nil {
-		return nil, fmt.Errorf("parse %s search page: %w", provider, err)
+		return nil, fmt.Errorf("parse Google search page: %w", err)
 	}
-	return parseTitleWebResults(provider, doc), nil
+	results := parseTitleWebResults("google", doc)
+	if len(results) == 0 {
+		pageText := strings.ToLower(strings.TrimSpace(doc.Text()))
+		if strings.Contains(pageText, "unusual traffic") || strings.Contains(pageText, "not a robot") || strings.Contains(pageText, "異常なトラフィック") {
+			return nil, fmt.Errorf("Google search was blocked by an anti-bot page")
+		}
+	}
+	return results, nil
 }
 
 func parseTitleWebResults(provider string, doc *goquery.Document) []titleWebSearchResult {
+	if provider != "google" || doc == nil {
+		return nil
+	}
+
 	results := make([]titleWebSearchResult, 0, 10)
+	seen := make(map[string]struct{})
 	appendResult := func(title, snippet, href string) {
 		title = strings.TrimSpace(spaceRE.ReplaceAllString(title, " "))
 		snippet = strings.TrimSpace(spaceRE.ReplaceAllString(snippet, " "))
-		href = strings.TrimSpace(href)
+		href = normalizeGoogleResultURL(strings.TrimSpace(href))
 		if title == "" && snippet == "" {
 			return
 		}
+		key := title + "\x00" + href
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
 		results = append(results, titleWebSearchResult{Title: title, Snippet: snippet, URL: href})
 	}
 
-	switch provider {
-	case "duckduckgo":
-		doc.Find(".result").EachWithBreak(func(_ int, sel *goquery.Selection) bool {
-			a := sel.Find("a.result__a").First()
-			href, _ := a.Attr("href")
-			appendResult(a.Text(), sel.Find(".result__snippet").First().Text(), href)
-			return len(results) < 10
+	// Google has used all of these outer result containers. Do not depend on a
+	// single generated class name: the h3-bearing result link is the anchor.
+	doc.Find("div.MjjYud, div.tF2Cxc, div.Gx5Zad").EachWithBreak(func(_ int, sel *goquery.Selection) bool {
+		var resultLink *goquery.Selection
+		sel.Find("a").EachWithBreak(func(_ int, a *goquery.Selection) bool {
+			if a.Find("h3").Length() > 0 {
+				resultLink = a
+				return false
+			}
+			return true
 		})
-	case "bing":
-		doc.Find("li.b_algo").EachWithBreak(func(_ int, sel *goquery.Selection) bool {
-			a := sel.Find("h2 a").First()
+		if resultLink != nil {
+			href, _ := resultLink.Attr("href")
+			title := resultLink.Find("h3").First().Text()
+			snippet := sel.Find("div.VwiC3b, div.yXK7lf, span.aCOpRe").First().Text()
+			if strings.TrimSpace(snippet) == "" {
+				snippet = sel.Text()
+			}
+			appendResult(title, snippet, href)
+		}
+		return len(results) < 10
+	})
+
+	// Stable structural fallback: Google organic results expose the title in h3
+	// under a link even when wrapper class names change.
+	if len(results) < 10 {
+		doc.Find("a").EachWithBreak(func(_ int, a *goquery.Selection) bool {
+			h3 := a.Find("h3").First()
+			if h3.Length() == 0 {
+				return true
+			}
 			href, _ := a.Attr("href")
-			appendResult(a.Text(), sel.Find("p").First().Text(), href)
+			appendResult(h3.Text(), a.Parent().Parent().Text(), href)
 			return len(results) < 10
 		})
 	}
 
-	// Search engines change markup periodically. Generic anchors are a fallback;
-	// candidate scoring still requires title similarity plus a plausible ID.
+	// Last resort keeps catalog IDs present in unusual Google result markup
+	// visible to the existing candidate scorer.
 	if len(results) == 0 {
 		doc.Find("a").EachWithBreak(func(_ int, a *goquery.Selection) bool {
 			href, _ := a.Attr("href")
@@ -278,6 +296,28 @@ func parseTitleWebResults(provider string, doc *goquery.Document) []titleWebSear
 		})
 	}
 	return results
+}
+
+func normalizeGoogleResultURL(raw string) string {
+	if raw == "" {
+		return raw
+	}
+	candidate := raw
+	if strings.HasPrefix(candidate, "/url?") {
+		candidate = "https://www.google.com" + candidate
+	}
+	parsed, err := url.Parse(candidate)
+	if err != nil {
+		return raw
+	}
+	if strings.Contains(strings.ToLower(parsed.Host), "google.") && parsed.Path == "/url" {
+		for _, key := range []string{"q", "url"} {
+			if target := strings.TrimSpace(parsed.Query().Get(key)); target != "" {
+				return target
+			}
+		}
+	}
+	return raw
 }
 
 func chooseCatalogCandidate(query string, results []titleWebSearchResult) (string, bool) {
@@ -333,7 +373,7 @@ func chooseCatalogCandidate(query string, results []titleWebSearchResult) (strin
 	}
 	if len(ranked) > 1 {
 		margin := ranked[0].Score - ranked[1].Score
-		if margin < 0.65 && ranked[1].Score >= ranked[0].Score*0.85 {
+		if margin < 1.0 && ranked[1].Score >= ranked[0].Score*0.85 {
 			return "", false
 		}
 	}
@@ -342,7 +382,7 @@ func chooseCatalogCandidate(query string, results []titleWebSearchResult) (strin
 
 func isKnownJAVResultURL(raw string) bool {
 	lower := strings.ToLower(raw)
-	for _, host := range []string{"javdb", "r18.dev", "r18.com", "dmm.co.jp", "dmm.com", "javlibrary"} {
+	for _, host := range []string{"javdb", "r18.dev", "r18.com", "dmm.co.jp", "dmm.com", "javlibrary", "fanza"} {
 		if strings.Contains(lower, host) {
 			return true
 		}
@@ -437,8 +477,6 @@ func compactComparable(s string) string {
 	return b.String()
 }
 
-// queryCoverage is asymmetric: search snippets contain extra site chrome, so
-// we measure how much of the query's character n-grams appear in the result.
 func queryCoverage(query, result string) float64 {
 	q := []rune(compactComparable(query))
 	r := []rune(compactComparable(result))
