@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import path from 'node:path';
+import { writeFile } from 'node:fs/promises';
 
 const evidenceDir = process.env.JAVINIZER_BLACKBOX_EVIDENCE_DIR;
 if (!evidenceDir) {
@@ -20,18 +21,22 @@ test('desktop localhost opens the main UI without login', async ({ page }) => {
 	await expect(page.locator('#login-username')).toHaveCount(0);
 	await expect(page.locator('#login-password')).toHaveCount(0);
 	await expect(page.locator('form')).not.toContainText(/sign in|ログイン/i);
-	await expect(page.locator('button[title]').filter({ has: page.locator('svg') })).not.toHaveAttribute('title', /logout|ログアウト/i);
+
+	const logoutButtons = page.locator('button[title]').filter({ hasText: /logout|ログアウト/i });
+	await expect(logoutButtons).toHaveCount(0);
 
 	const setupOrLogin = authCalls.filter((call) => /POST \/api\/v1\/auth\/(setup|login)$/.test(call));
 	expect(setupOrLogin).toEqual([]);
 
+	const authEvidence = authCalls.join('\n') + '\n';
+	await writeFile(path.join(evidenceDir, 'desktop-noauth-auth-requests.txt'), authEvidence, 'utf8');
 	await page.screenshot({
 		path: path.join(evidenceDir, 'desktop-noauth-main-ui.png'),
 		fullPage: true
 	});
 
 	await test.info().attach('auth-requests', {
-		body: Buffer.from(authCalls.join('\n') + '\n'),
+		body: Buffer.from(authEvidence),
 		contentType: 'text/plain'
 	});
 });
