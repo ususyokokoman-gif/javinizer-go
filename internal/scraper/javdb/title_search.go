@@ -24,9 +24,13 @@ type titleCandidate struct {
 // detail-page results for the strongest title matches. It deliberately returns
 // multiple candidates so the caller can combine JavDB evidence with independent
 // sources instead of treating the first search hit as authoritative.
+//
+// Title lookup is an identification aid, not a final metadata scrape. It is
+// therefore intentionally available even when JavDB is disabled as a metadata
+// scraper. Search and ScrapeURL retain their enabled checks.
 func (s *scraper) SearchTitleCandidates(ctx context.Context, title string, limit int) ([]*models.ScraperResult, error) {
-	if s == nil || !s.enabled {
-		return nil, fmt.Errorf("JavDB scraper is disabled")
+	if s == nil {
+		return nil, fmt.Errorf("JavDB scraper is unavailable")
 	}
 	title = strings.TrimSpace(title)
 	if title == "" {
