@@ -26,7 +26,7 @@ func (s *Scraper) lookupCatalogIDOnWeb(ctx context.Context, title string) (strin
 
 	queries := buildTitleWebQueries(title)
 	var lastErr error
-	googleResultCount := 0
+	var googleEvidence []titleWebSearchResult
 	for _, q := range queries {
 		results, err := s.fetchTitleWebSearch(ctx, "google", q)
 		if err != nil {
@@ -34,7 +34,7 @@ func (s *Scraper) lookupCatalogIDOnWeb(ctx context.Context, title string) (strin
 			logging.Infof("[scrape] Google search query=%q failed: %v", truncateRunes(q, 120), err)
 			continue
 		}
-		googleResultCount += len(results)
+		googleEvidence = mergeTitleWebResults(googleEvidence, results)
 		merged = mergeTitleWebResults(merged, results)
 		logging.Infof("[scrape] Google search query=%q results=%d merged=%d", truncateRunes(q, 120), len(results), len(merged))
 		if id, ok := chooseCatalogCandidate(title, merged); ok && candidateHasTrustedEvidence(id, merged) {
@@ -48,29 +48,31 @@ func (s *Scraper) lookupCatalogIDOnWeb(ctx context.Context, title string) (strin
 		}
 	}
 
-	if id, ok := chooseCatalogCandidate(title, merged); ok {
-		if !directOK {
+	if !directOK {
+		if id, ok := chooseCatalogCandidate(title, merged); ok {
 			return id, nil
 		}
-		if catalogComparable(id) == catalogComparable(directID) && len(candidateTrustedSources(id, merged)) >= 2 {
-			return id, nil
+		if lastErr != nil && len(merged) == 0 {
+			return "", lastErr
 		}
-		if googleResultCount == 0 && catalogComparable(id) == catalogComparable(directID) {
-			// Google may be unavailable or blocked. A title-matched JavDB result
-			// that was independently re-opened as a detail page is an acceptable
-			// degraded fallback when no search-engine evidence was obtainable.
-			logging.Infof("[scrape] using verified direct title candidate %s because Google returned no usable results", directID)
-			return directID, nil
+		return "", fmt.Errorf("no sufficiently corroborated catalog-ID candidate")
+	}
+
+	// A verified direct detail-page result remains the degraded fallback only
+	// when Google did not produce a different sufficiently strong candidate.
+	// Merely receiving unrelated organic results must not disable the fallback.
+	if googleID, googleOK := chooseCatalogCandidate(title, googleEvidence); googleOK {
+		if catalogComparable(googleID) != catalogComparable(directID) {
+			return "", fmt.Errorf("direct title candidate %s conflicts with Google evidence for %s", directID, googleID)
 		}
-		return "", fmt.Errorf("direct title candidate %s was not independently corroborated", directID)
+		// The same candidate from Google may still be the same JavDB evidence
+		// family. If an independent trusted family was present, the loop above
+		// would already have returned. With no conflict, retain the verified
+		// JavDB detail page as the fallback.
 	}
-	if directOK && googleResultCount == 0 {
-		return directID, nil
-	}
-	if lastErr != nil && len(merged) == 0 {
-		return "", lastErr
-	}
-	return "", fmt.Errorf("no sufficiently corroborated catalog-ID candidate")
+
+	logging.Infof("[scrape] using verified direct title candidate %s after no conflicting strong Google evidence was found", directID)
+	return directID, nil
 }
 
 func (s *Scraper) fetchTitleWebSearch(ctx context.Context, provider, query string) ([]titleWebSearchResult, error) {
