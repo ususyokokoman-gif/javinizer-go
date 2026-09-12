@@ -237,6 +237,7 @@ func parseBingTitleWebResults(doc *goquery.Document) []titleWebSearchResult {
 		}
 		title := strings.TrimSpace(spaceRE.ReplaceAllString(link.Text(), " "))
 		href, _ := link.Attr("href")
+		href = sanitizeSearchResultURL(strings.TrimSpace(href))
 		snippet := strings.TrimSpace(spaceRE.ReplaceAllString(sel.Find("div.b_caption p").First().Text(), " "))
 		if snippet == "" {
 			snippet = strings.TrimSpace(spaceRE.ReplaceAllString(sel.Find("p").First().Text(), " "))
@@ -244,15 +245,42 @@ func parseBingTitleWebResults(doc *goquery.Document) []titleWebSearchResult {
 		if title == "" {
 			return true
 		}
-		key := title + "\x00" + strings.TrimSpace(href)
+		key := title + "\x00" + href
 		if _, ok := seen[key]; ok {
 			return true
 		}
 		seen[key] = struct{}{}
-		results = append(results, titleWebSearchResult{Title: title, Snippet: snippet, URL: strings.TrimSpace(href)})
+		results = append(results, titleWebSearchResult{Title: title, Snippet: snippet, URL: href})
 		return len(results) < 10
 	})
 	return results
+}
+
+// sanitizeSearchResultURL prevents opaque search-engine redirect/tracking IDs
+// from being mistaken for JAV catalog IDs. Only a real destination URL may
+// contribute URL-derived evidence to catalog-number scoring.
+func sanitizeSearchResultURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	host := strings.ToLower(strings.TrimSuffix(parsed.Hostname(), "."))
+	path := strings.ToLower(parsed.EscapedPath())
+	if host == "bing.com" || strings.HasSuffix(host, ".bing.com") {
+		if path == "/ck/a" || strings.HasPrefix(path, "/aclick") || strings.Contains(path, "glinkping") {
+			return ""
+		}
+	}
+	if host == "google.com" || strings.HasSuffix(host, ".google.com") {
+		if path == "/url" || path == "/aclk" {
+			return ""
+		}
+	}
+	return raw
 }
 
 func findHeadlessSearchBrowser() (string, error) {
