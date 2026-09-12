@@ -30,3 +30,9 @@ jobs:
         run: |
           go test -v ./internal/scraper/javdb -run '^(TestSearchTitleCandidatesVerifiesDetailPageID|TestJavDBTitleSimilarityRejectsUnrelatedTitle)$' -count=1
           if ($LASTEXITCODE -ne 0) { throw 'JavDB direct-title tests failed' }
+
+      - name: Test live production title resolution
+        shell: pwsh
+        run: |
+          go test -v -tags 'submissionlive' ./internal/scrape -run '^TestSubmissionLiveTitleToCatalogID$' -count=1 -timeout 5m
+          if ($LASTEXITCODE -ne 0) { throw 'live production title resolution failed' }
