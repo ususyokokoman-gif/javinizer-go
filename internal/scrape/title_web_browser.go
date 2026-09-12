@@ -1,5 +1,3 @@
-//go:build keepwords
-
 package scrape
 
 import (
