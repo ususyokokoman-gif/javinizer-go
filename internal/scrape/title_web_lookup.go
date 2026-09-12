@@ -15,14 +15,18 @@ import (
 func (s *Scraper) lookupCatalogIDOnWeb(ctx context.Context, title string) (string, error) {
 	// First ask metadata sources that can search by title directly. A JavDB
 	// candidate is re-opened as a detail page before it reaches this layer, so
-	// it is independent structured evidence rather than a search-engine guess.
-	merged := mergeTitleWebResults(s.collectDirectTitleEvidence(ctx, title))
-	if id, ok := chooseCatalogCandidate(title, merged); ok && candidateHasTrustedEvidence(id, merged) {
-		return id, nil
+	// it is stronger than a search-engine snippet. We still try to corroborate
+	// it with a second trusted source before returning early.
+	directEvidence := s.collectDirectTitleEvidence(ctx, title)
+	merged := mergeTitleWebResults(directEvidence)
+	directID, directOK := chooseCatalogCandidate(title, directEvidence)
+	if directOK && !candidateHasTrustedEvidence(directID, directEvidence) {
+		directID, directOK = "", false
 	}
 
 	queries := buildTitleWebQueries(title)
 	var lastErr error
+	googleResultCount := 0
 	for _, q := range queries {
 		results, err := s.fetchTitleWebSearch(ctx, "google", q)
 		if err != nil {
@@ -30,14 +34,38 @@ func (s *Scraper) lookupCatalogIDOnWeb(ctx context.Context, title string) (strin
 			logging.Infof("[scrape] Google search query=%q failed: %v", truncateRunes(q, 120), err)
 			continue
 		}
+		googleResultCount += len(results)
 		merged = mergeTitleWebResults(merged, results)
 		logging.Infof("[scrape] Google search query=%q results=%d merged=%d", truncateRunes(q, 120), len(results), len(merged))
 		if id, ok := chooseCatalogCandidate(title, merged); ok && candidateHasTrustedEvidence(id, merged) {
-			return id, nil
+			if !directOK {
+				return id, nil
+			}
+			if catalogComparable(id) == catalogComparable(directID) && len(candidateTrustedSources(id, merged)) >= 2 {
+				logging.Infof("[scrape] direct title candidate %s corroborated by %d trusted source families", id, len(candidateTrustedSources(id, merged)))
+				return id, nil
+			}
 		}
 	}
+
 	if id, ok := chooseCatalogCandidate(title, merged); ok {
-		return id, nil
+		if !directOK {
+			return id, nil
+		}
+		if catalogComparable(id) == catalogComparable(directID) && len(candidateTrustedSources(id, merged)) >= 2 {
+			return id, nil
+		}
+		if googleResultCount == 0 && catalogComparable(id) == catalogComparable(directID) {
+			// Google may be unavailable or blocked. A title-matched JavDB result
+			// that was independently re-opened as a detail page is an acceptable
+			// degraded fallback when no search-engine evidence was obtainable.
+			logging.Infof("[scrape] using verified direct title candidate %s because Google returned no usable results", directID)
+			return directID, nil
+		}
+		return "", fmt.Errorf("direct title candidate %s was not independently corroborated", directID)
+	}
+	if directOK && googleResultCount == 0 {
+		return directID, nil
 	}
 	if lastErr != nil && len(merged) == 0 {
 		return "", lastErr
