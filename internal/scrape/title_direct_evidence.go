@@ -39,7 +39,7 @@ func (s *Scraper) collectDirectTitleEvidence(ctx context.Context, title string) 
 			logging.Infof("[scrape] direct title source %s failed for %q: %v", sourceName, truncateRunes(title, 100), err)
 			continue
 		}
-		for _, result := range results {
+		for rank, result := range results {
 			if result == nil || strings.TrimSpace(result.ID) == "" {
 				continue
 			}
@@ -48,6 +48,14 @@ func (s *Scraper) collectDirectTitleEvidence(ctx context.Context, title string) 
 				resultTitle = strings.TrimSpace(result.OriginalTitle)
 			}
 			snippet := strings.TrimSpace(strings.Join([]string{result.OriginalTitle, "品番", result.ID}, " "))
+			logging.Infof(
+				"[scrape] direct title candidate source=%s rank=%d id=%s coverage=%.3f title=%q",
+				sourceName,
+				rank+1,
+				result.ID,
+				queryCoverage(title, resultTitle),
+				truncateRunes(resultTitle, 140),
+			)
 			out = append(out, titleWebSearchResult{
 				Title:   resultTitle,
 				Snippet: snippet,
