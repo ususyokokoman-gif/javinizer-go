@@ -5,6 +5,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -21,7 +23,12 @@ import (
 // desktop application already runs on machines with a modern browser, so use a
 // headless browser only as a fallback. Serializing the fallback avoids launching
 // many browser processes at once when a batch contains several title-only files.
-var googleBrowserSearchMu sync.Mutex
+var (
+	googleBrowserSearchMu      sync.Mutex
+	googleBrowserBlockedUntil time.Time
+)
+
+const googleBrowserBlockCooldown = 10 * time.Minute
 
 func isGoogleSearchInterstitial(doc *goquery.Document, results []titleWebSearchResult) bool {
 	if doc == nil {
@@ -42,18 +49,18 @@ func isGoogleSearchInterstitial(doc *goquery.Document, results []titleWebSearchR
 		return true
 	}
 
-	// Hosted runners have also returned only these navigation/control links.
-	// Organic pages normally contain many h3 results, so keep this conservative.
-	if len(results) <= 3 {
+	// Hosted runners can receive a Google control page instead of organic
+	// results. Keep generic labels such as "利用規約" conservative by requiring
+	// the matching Google control URL; the stronger historical labels remain
+	// sufficient on their own.
+	if len(results) > 0 && len(results) <= 4 {
 		controlLinks := 0
 		for _, result := range results {
-			title := strings.ToLower(strings.TrimSpace(result.Title))
-			switch title {
-			case "ここをクリック", "click here", "フィードバック", "feedback":
+			if isGoogleControlResult(result) {
 				controlLinks++
 			}
 		}
-		if controlLinks > 0 {
+		if controlLinks == len(results) {
 			return true
 		}
 	}
@@ -67,13 +74,47 @@ func isGoogleSearchInterstitial(doc *goquery.Document, results []titleWebSearchR
 	return false
 }
 
+func isGoogleControlResult(result titleWebSearchResult) bool {
+	title := strings.ToLower(strings.TrimSpace(result.Title))
+	rawURL := strings.ToLower(strings.TrimSpace(result.URL))
+
+	switch title {
+	case "ここをクリック", "click here", "フィードバック", "feedback":
+		return true
+	}
+
+	if rawURL == "#" {
+		switch title {
+		case "このページが表示された理由", "why this page", "why this page is displayed":
+			return true
+		}
+	}
+	if strings.Contains(rawURL, "google.com/policies/terms") || strings.Contains(rawURL, "policies.google.com/terms") {
+		switch title {
+		case "利用規約", "terms", "terms of service":
+			return true
+		}
+	}
+	if strings.Contains(rawURL, "support.google.com/websearch/answer/86640") {
+		return true
+	}
+	return false
+}
+
 func fetchGoogleSearchWithHeadlessBrowser(ctx context.Context, endpoint string) ([]titleWebSearchResult, error) {
 	googleBrowserSearchMu.Lock()
 	defer googleBrowserSearchMu.Unlock()
 
+	// Once Google has positively served a control/interstitial page, repeatedly
+	// launching Edge for every query variant only wastes tens of seconds. During
+	// a short cooldown, use an independent search engine directly instead.
+	if time.Now().Before(googleBrowserBlockedUntil) {
+		return fetchBingSearchForGoogleEndpoint(ctx, endpoint)
+	}
+
 	browser, err := findHeadlessSearchBrowser()
 	if err != nil {
-		return nil, err
+		return fetchBingSearchForGoogleEndpoint(ctx, endpoint)
 	}
 
 	profile, err := os.MkdirTemp("", "javinizer-google-browser-")
@@ -82,7 +123,7 @@ func fetchGoogleSearchWithHeadlessBrowser(ctx context.Context, endpoint string) 
 	}
 	defer os.RemoveAll(profile)
 
-	browserCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
+	browserCtx, cancel := context.WithTimeout(ctx, 18*time.Second)
 	defer cancel()
 
 	args := []string{
@@ -95,7 +136,7 @@ func fetchGoogleSearchWithHeadlessBrowser(ctx context.Context, endpoint string) 
 		"--disable-sync",
 		"--lang=ja-JP",
 		"--user-data-dir=" + profile,
-		"--virtual-time-budget=8000",
+		"--virtual-time-budget=6000",
 		"--dump-dom",
 		endpoint,
 	}
@@ -104,6 +145,11 @@ func fetchGoogleSearchWithHeadlessBrowser(ctx context.Context, endpoint string) 
 	cmd.Stderr = &stderr
 	body, err := cmd.Output()
 	if err != nil {
+		// A browser timeout/failure should not make title resolution depend on a
+		// single provider. Bing is deliberately HTTP-only and therefore cheap.
+		if fallback, fallbackErr := fetchBingSearchForGoogleEndpoint(ctx, endpoint); fallbackErr == nil && len(fallback) > 0 {
+			return fallback, nil
+		}
 		if browserCtx.Err() != nil {
 			return nil, fmt.Errorf("headless Google search timed out: %w", browserCtx.Err())
 		}
@@ -117,7 +163,7 @@ func fetchGoogleSearchWithHeadlessBrowser(ctx context.Context, endpoint string) 
 		return nil, fmt.Errorf("headless Google search failed: %w", err)
 	}
 	if len(body) == 0 {
-		return nil, fmt.Errorf("headless Google search returned an empty document")
+		return fetchBingSearchForGoogleEndpoint(ctx, endpoint)
 	}
 
 	doc, err := goquery.NewDocumentFromReader(io.LimitReader(bytes.NewReader(body), maxWebSearchBody))
@@ -126,12 +172,87 @@ func fetchGoogleSearchWithHeadlessBrowser(ctx context.Context, endpoint string) 
 	}
 	results := parseTitleWebResults("google", doc)
 	if isGoogleSearchInterstitial(doc, results) {
-		return nil, fmt.Errorf("rendered Google search was still blocked by an interstitial")
+		googleBrowserBlockedUntil = time.Now().Add(googleBrowserBlockCooldown)
+		return fetchBingSearchForGoogleEndpoint(ctx, endpoint)
 	}
 	if len(results) == 0 {
-		return nil, fmt.Errorf("rendered Google search returned no organic results")
+		return fetchBingSearchForGoogleEndpoint(ctx, endpoint)
 	}
 	return results, nil
+}
+
+func fetchBingSearchForGoogleEndpoint(ctx context.Context, googleEndpoint string) ([]titleWebSearchResult, error) {
+	parsed, err := url.Parse(googleEndpoint)
+	if err != nil {
+		return nil, fmt.Errorf("parse Google search endpoint for fallback: %w", err)
+	}
+	query := strings.TrimSpace(parsed.Query().Get("q"))
+	if query == "" {
+		return nil, fmt.Errorf("Google search endpoint had no query for fallback")
+	}
+	return fetchBingTitleWebSearch(ctx, query)
+}
+
+func fetchBingTitleWebSearch(ctx context.Context, query string) ([]titleWebSearchResult, error) {
+	endpoint := "https://www.bing.com/search?setlang=ja-JP&count=10&form=QBLH&q=" + url.QueryEscape(query)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml")
+	req.Header.Set("Accept-Language", "ja-JP,ja;q=0.9,en-US;q=0.7,en;q=0.5")
+
+	client := &http.Client{Timeout: 12 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("Bing fallback request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("Bing fallback returned HTTP %d", resp.StatusCode)
+	}
+
+	doc, err := goquery.NewDocumentFromReader(io.LimitReader(resp.Body, maxWebSearchBody))
+	if err != nil {
+		return nil, fmt.Errorf("parse Bing fallback page: %w", err)
+	}
+	results := parseBingTitleWebResults(doc)
+	if len(results) == 0 {
+		return nil, fmt.Errorf("Bing fallback returned no organic results")
+	}
+	return results, nil
+}
+
+func parseBingTitleWebResults(doc *goquery.Document) []titleWebSearchResult {
+	if doc == nil {
+		return nil
+	}
+	results := make([]titleWebSearchResult, 0, 10)
+	seen := make(map[string]struct{})
+	doc.Find("li.b_algo").EachWithBreak(func(_ int, sel *goquery.Selection) bool {
+		link := sel.Find("h2 a").First()
+		if link.Length() == 0 {
+			return true
+		}
+		title := strings.TrimSpace(spaceRE.ReplaceAllString(link.Text(), " "))
+		href, _ := link.Attr("href")
+		snippet := strings.TrimSpace(spaceRE.ReplaceAllString(sel.Find("div.b_caption p").First().Text(), " "))
+		if snippet == "" {
+			snippet = strings.TrimSpace(spaceRE.ReplaceAllString(sel.Find("p").First().Text(), " "))
+		}
+		if title == "" {
+			return true
+		}
+		key := title + "\x00" + strings.TrimSpace(href)
+		if _, ok := seen[key]; ok {
+			return true
+		}
+		seen[key] = struct{}{}
+		results = append(results, titleWebSearchResult{Title: title, Snippet: snippet, URL: strings.TrimSpace(href)})
+		return len(results) < 10
+	})
+	return results
 }
 
 func findHeadlessSearchBrowser() (string, error) {
