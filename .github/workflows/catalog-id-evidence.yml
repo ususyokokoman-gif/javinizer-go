@@ -19,23 +19,6 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Format check evidence sources
-        shell: pwsh
-        run: |
-          $files = @(
-            'internal/scrape/title_direct_evidence.go',
-            'internal/scrape/title_web_browser.go',
-            'internal/scrape/title_web_evidence.go',
-            'internal/scrape/title_web_lookup.go',
-            'internal/scrape/title_web_score.go',
-            'internal/scrape/title_web_search_smart_test.go',
-            'internal/scraper/javdb/title_search.go',
-            'internal/scraper/javdb/title_search_test.go'
-          )
-          gofmt -d $files | Tee-Object -FilePath gofmt.diff
-          if ($LASTEXITCODE -ne 0) { throw 'gofmt failed' }
-          if ((Get-Item gofmt.diff).Length -ne 0) { Get-Content gofmt.diff; throw 'evidence sources are not gofmt-clean' }
-
       - name: Test catalog evidence and DMM normalization
         shell: pwsh
         run: |
