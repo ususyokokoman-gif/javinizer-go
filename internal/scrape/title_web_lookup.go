@@ -23,6 +23,17 @@ func (s *Scraper) lookupCatalogIDOnWeb(ctx context.Context, title string) (strin
 	if directOK && !candidateHasTrustedEvidence(directID, directEvidence) {
 		directID, directOK = "", false
 	}
+	if !directOK {
+		// General scoring intentionally rejects close multi-candidate races. A
+		// stricter direct-source rule may still resolve the title when exactly one
+		// verified detail page has the exact normalized requested title. This is
+		// safe under Google rate limiting because duplicate exact titles remain
+		// unresolved rather than falling back to search-result rank.
+		if exactID, ok := chooseExactDirectTitleCandidate(title, directEvidence); ok {
+			directID, directOK = exactID, true
+			logging.Infof("[scrape] unique exact direct title candidate selected: %s", directID)
+		}
+	}
 
 	queries := buildTitleWebQueries(title)
 	var lastErr error
