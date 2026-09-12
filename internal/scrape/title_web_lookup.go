@@ -95,6 +95,10 @@ func chooseVerifiedDirectFallback(title, directID string, googleEvidence []title
 	return directID, nil
 }
 
+func shouldUseHeadlessGoogleFallback(statusCode int) bool {
+	return statusCode == http.StatusTooManyRequests || statusCode == http.StatusForbidden
+}
+
 func (s *Scraper) fetchTitleWebSearch(ctx context.Context, provider, query string) ([]titleWebSearchResult, error) {
 	if provider != "google" {
 		return nil, fmt.Errorf("unsupported web search provider %q; Google is the only provider", provider)
@@ -120,6 +124,10 @@ func (s *Scraper) fetchTitleWebSearch(ctx context.Context, provider, query strin
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		if shouldUseHeadlessGoogleFallback(resp.StatusCode) {
+			logging.Infof("[scrape] Google search returned HTTP %d; retrying with headless browser", resp.StatusCode)
+			return fetchGoogleSearchWithHeadlessBrowser(ctx, endpoint)
+		}
 		return nil, fmt.Errorf("Google search returned HTTP %d", resp.StatusCode)
 	}
 	doc, err := goquery.NewDocumentFromReader(io.LimitReader(resp.Body, maxWebSearchBody))
