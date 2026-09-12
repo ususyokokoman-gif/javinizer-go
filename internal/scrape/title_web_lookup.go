@@ -58,20 +58,23 @@ func (s *Scraper) lookupCatalogIDOnWeb(ctx context.Context, title string) (strin
 		return "", fmt.Errorf("no sufficiently corroborated catalog-ID candidate")
 	}
 
-	// A verified direct detail-page result remains the degraded fallback only
-	// when Google did not produce a different sufficiently strong candidate.
-	// Merely receiving unrelated organic results must not disable the fallback.
-	if googleID, googleOK := chooseCatalogCandidate(title, googleEvidence); googleOK {
-		if catalogComparable(googleID) != catalogComparable(directID) {
-			return "", fmt.Errorf("direct title candidate %s conflicts with Google evidence for %s", directID, googleID)
-		}
-		// The same candidate from Google may still be the same JavDB evidence
-		// family. If an independent trusted family was present, the loop above
-		// would already have returned. With no conflict, retain the verified
-		// JavDB detail page as the fallback.
+	id, err := chooseVerifiedDirectFallback(title, directID, googleEvidence)
+	if err != nil {
+		return "", err
 	}
+	logging.Infof("[scrape] using verified direct title candidate %s after no conflicting strong Google evidence was found", id)
+	return id, nil
+}
 
-	logging.Infof("[scrape] using verified direct title candidate %s after no conflicting strong Google evidence was found", directID)
+func chooseVerifiedDirectFallback(title, directID string, googleEvidence []titleWebSearchResult) (string, error) {
+	directID = normalizeWebCatalogCandidate(directID)
+	if directID == "" {
+		return "", fmt.Errorf("verified direct title candidate is empty")
+	}
+	googleID, googleOK := chooseCatalogCandidate(title, googleEvidence)
+	if googleOK && catalogComparable(googleID) != catalogComparable(directID) {
+		return "", fmt.Errorf("direct title candidate %s conflicts with Google evidence for %s", directID, googleID)
+	}
 	return directID, nil
 }
 
