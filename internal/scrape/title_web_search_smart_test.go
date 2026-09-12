@@ -65,6 +65,21 @@ func TestUntrustedCompactURLDoesNotBecomeCatalogID(t *testing.T) {
 	}
 }
 
+func TestTrustedCatalogSourceRejectsSpoofedHost(t *testing.T) {
+	for _, raw := range []string{
+		"https://dmm.co.jp.evil.example/detail/cid=ssis00001/",
+		"https://javdb.com.evil.example/v/abc",
+		"https://r18.dev.evil.example/videos/ssis-001",
+	} {
+		if got := trustedCatalogSource(raw); got != "" {
+			t.Fatalf("spoofed host %q was trusted as %q", raw, got)
+		}
+		if ids := extractTrustedURLCatalogCandidates(raw); len(ids) != 0 {
+			t.Fatalf("spoofed host %q yielded catalog IDs: %v", raw, ids)
+		}
+	}
+}
+
 func TestWeakUnrelatedTrustedURLStillRejected(t *testing.T) {
 	results := []titleWebSearchResult{
 		{
