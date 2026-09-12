@@ -64,3 +64,25 @@ func TestChooseExactDirectTitleCandidateRejectsAmbiguousRowIDs(t *testing.T) {
 		t.Fatalf("row containing multiple IDs resolved to %q", got)
 	}
 }
+
+func TestDirectTitleEvidenceIsAmbiguousForSharedBaseTitle(t *testing.T) {
+	query := "今日、あなたの上司に犯されました。"
+	results := []titleWebSearchResult{
+		{Title: query + " 佐山愛", Snippet: "品番 MIDE-215", URL: "https://javdb.com/v/a"},
+		{Title: query + " 神咲詩織", Snippet: "品番 MIDE-243", URL: "https://javdb.com/v/b"},
+	}
+	if !directTitleEvidenceIsAmbiguous(query, results) {
+		t.Fatal("shared verified base title should be ambiguous")
+	}
+}
+
+func TestDirectTitleEvidenceIsNotAmbiguousForFullDisambiguatedTitle(t *testing.T) {
+	query := "今日、あなたの上司に犯されました。 大橋未久"
+	results := []titleWebSearchResult{
+		{Title: query, Snippet: "品番 MIDE-007", URL: "https://javdb.com/v/exact"},
+		{Title: "今日、あなたの上司に犯されました。 佐山愛", Snippet: "品番 MIDE-215", URL: "https://javdb.com/v/other"},
+	}
+	if directTitleEvidenceIsAmbiguous(query, results) {
+		t.Fatal("fully disambiguated verified title should not be ambiguous")
+	}
+}
