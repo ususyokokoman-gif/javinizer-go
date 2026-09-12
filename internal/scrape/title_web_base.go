@@ -48,7 +48,7 @@ func (s *Scraper) resolveTitleViaWeb(ctx context.Context, cmd ScrapeCmd) ScrapeC
 	if len([]rune(compactComparable(title))) < 4 { return cmd }
 	id, err := s.lookupCatalogIDOnWeb(ctx, title)
 	if err != nil { logging.Infof("[scrape] title lookup failed for %q: %v", truncateRunes(title, 100), err); return cmd }
-	if id != "" { logging.Infof("[scrape] title lookup resolved %q -> %s", truncateRunes(title, 80), id); cmd.MovieID = id }
+	if id != "" { logging.Infof("[scrape] title web lookup resolved %q -> %s", truncateRunes(title, 80), id); cmd.MovieID = id }
 	return cmd
 }
 
