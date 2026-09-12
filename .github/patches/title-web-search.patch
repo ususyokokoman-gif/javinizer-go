@@ -118,7 +118,22 @@ diff --git a/internal/scrape/title_web_search.go b/internal/scrape/title_web_sea
 +}
  
  func (s *Scraper) fetchTitleWebSearch(ctx context.Context, provider, query string) ([]titleWebSearchResult, error) {
-@@ -327,40 +385,66 @@ func chooseCatalogCandidate(query string, results []titleWebSearchResult) (string
+@@ -223,6 +281,14 @@ func (s *Scraper) fetchTitleWebSearch(ctx context.Context, provider, query string
+ 		return nil, fmt.Errorf("parse Google search page: %w", err)
+ 	}
+ 	results := parseTitleWebResults("google", doc)
++	if isGoogleSearchInterstitial(doc, results) {
++		rendered, renderErr := fetchGoogleSearchWithHeadlessBrowser(ctx, endpoint)
++		if renderErr != nil {
++			return nil, fmt.Errorf("Google HTTP search returned an interstitial; browser fallback failed: %w", renderErr)
++		}
++		logging.Infof("[scrape] Google HTTP interstitial bypassed with headless browser; results=%d", len(rendered))
++		return rendered, nil
++	}
+ 	if len(results) == 0 {
+ 		pageText := strings.ToLower(strings.TrimSpace(doc.Text()))
+ 		if strings.Contains(pageText, "unusual traffic") || strings.Contains(pageText, "not a robot") || strings.Contains(pageText, "異常なトラフィック") {
+@@ -327,40 +393,66 @@ func chooseCatalogCandidate(query string, results []titleWebSearchResult) (string
  		if queryLen >= 8 && coverage < 0.12 {
  			continue
  		}
@@ -155,7 +170,7 @@ diff --git a/internal/scrape/title_web_search.go b/internal/scrape/title_web_sea
  			scores[id] += score
  		}
  	}
-@@ -377,21 +461,110 @@ func chooseCatalogCandidate(query string, results []titleWebSearchResult) (string
+@@ -377,21 +469,110 @@ func chooseCatalogCandidate(query string, results []titleWebSearchResult) (string
  		}
  		return ranked[i].Score > ranked[j].Score
  	})
