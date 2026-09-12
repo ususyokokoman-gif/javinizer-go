@@ -19,19 +19,25 @@ func (s *Scraper) lookupCatalogIDOnWeb(ctx context.Context, title string) (strin
 	// it with a second trusted source before returning early.
 	directEvidence := s.collectDirectTitleEvidence(ctx, title)
 	merged := mergeTitleWebResults(directEvidence)
-	directID, directOK := chooseCatalogCandidate(title, directEvidence)
-	if directOK && !candidateHasTrustedEvidence(directID, directEvidence) {
-		directID, directOK = "", false
-	}
-	if !directOK {
-		// General scoring intentionally rejects close multi-candidate races. A
-		// stricter direct-source rule may still resolve the title when exactly one
-		// verified detail page has the exact normalized requested title. This is
-		// safe under Google rate limiting because duplicate exact titles remain
-		// unresolved rather than falling back to search-result rank.
-		if exactID, ok := chooseExactDirectTitleCandidate(title, directEvidence); ok {
-			directID, directOK = exactID, true
-			logging.Infof("[scrape] unique exact direct title candidate selected: %s", directID)
+
+	var directID string
+	var directOK bool
+	if exactID, ok := chooseExactDirectTitleCandidate(title, directEvidence); ok {
+		// Exact, unique detail-page title identity is stronger than the general
+		// ranking heuristic, so prefer it whenever it exists.
+		directID, directOK = exactID, true
+		logging.Infof("[scrape] unique exact direct title candidate selected: %s", directID)
+	} else {
+		// If two or more verified detail pages are compatible with the supplied
+		// title, the local filename itself does not identify one work. Search-
+		// engine rank is not evidence of user intent, so fail closed instead of
+		// allowing Google to arbitrarily break the tie.
+		if directTitleEvidenceIsAmbiguous(title, directEvidence) {
+			return "", fmt.Errorf("ambiguous title matches multiple verified catalog IDs")
+		}
+		directID, directOK = chooseCatalogCandidate(title, directEvidence)
+		if directOK && !candidateHasTrustedEvidence(directID, directEvidence) {
+			directID, directOK = "", false
 		}
 	}
 
