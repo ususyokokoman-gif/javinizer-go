@@ -20,7 +20,8 @@ test('desktop localhost opens the main UI without login', async ({ page }) => {
 	await expect(page.locator('a[href="/browse"]')).toBeVisible();
 	await expect(page.locator('#login-username')).toHaveCount(0);
 	await expect(page.locator('#login-password')).toHaveCount(0);
-	await expect(page.locator('form')).not.toContainText(/sign in|ログイン/i);
+	const loginForms = page.locator('form').filter({ hasText: /sign in|ログイン/i });
+	await expect(loginForms).toHaveCount(0);
 
 	const logoutButtons = page.locator('button[title]').filter({ hasText: /logout|ログアウト/i });
 	await expect(logoutButtons).toHaveCount(0);
