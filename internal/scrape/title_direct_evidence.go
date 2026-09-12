@@ -15,10 +15,13 @@ type titleCandidateSearcher interface {
 	SearchTitleCandidates(ctx context.Context, title string, limit int) ([]*models.ScraperResult, error)
 }
 
-// collectDirectTitleEvidence asks configured metadata sources that support
-// title search directly. Today JavDB implements this seam. Each returned row
-// has already been re-opened as a detail page by the source scraper, so its ID
-// and source URL are stronger evidence than a generic search-engine snippet.
+// collectDirectTitleEvidence asks registered title-identification sources that
+// support free-form title search. This lookup is deliberately independent of
+// whether a source is enabled for final metadata scraping: Google web lookup is
+// likewise an identification aid, and selecting --scrapers must not disable a
+// stronger verified ID signal. Today JavDB implements this seam. Each returned
+// row has already been re-opened as a detail page by the source scraper, so its
+// ID and source URL are stronger evidence than a generic search-engine snippet.
 func (s *Scraper) collectDirectTitleEvidence(ctx context.Context, title string) []titleWebSearchResult {
 	if s == nil || s.registry == nil || strings.TrimSpace(title) == "" {
 		return nil
@@ -27,7 +30,7 @@ func (s *Scraper) collectDirectTitleEvidence(ctx context.Context, title string) 
 	out := make([]titleWebSearchResult, 0, 4)
 	for _, sourceName := range []string{"javdb"} {
 		instance, ok := s.registry.GetInstance(sourceName)
-		if !ok || instance == nil || !instance.IsEnabled() {
+		if !ok || instance == nil {
 			continue
 		}
 		searcher, ok := instance.(titleCandidateSearcher)
