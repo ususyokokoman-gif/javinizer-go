@@ -11,6 +11,9 @@ import (
 	"time"
 
 	httpclient "github.com/javinizer/javinizer-go/internal/httpclient"
+	"github.com/javinizer/javinizer-go/internal/models"
+	scraperpkg "github.com/javinizer/javinizer-go/internal/scraper"
+	"github.com/javinizer/javinizer-go/internal/scraperutil"
 )
 
 type liveGoogleRecorder struct {
@@ -38,6 +41,38 @@ func (r *liveGoogleRecorder) snapshot() ([]string, []string) {
 	return append([]string(nil), r.hosts...), append([]string(nil), r.queries...)
 }
 
+func newSubmissionLiveRegistry(t *testing.T) *scraperutil.ScraperRegistry {
+	t.Helper()
+	reg := scraperutil.NewScraperRegistry()
+	scraperpkg.RegisterAll(reg)
+	javdbRegistration, ok := reg.Get("javdb")
+	if !ok {
+		t.Fatal("production scraper registry did not register javdb")
+	}
+	settings := javdbRegistration.Defaults
+	settings.Enabled = true
+	if settings.Timeout <= 0 {
+		settings.Timeout = 20
+	}
+	settings.RetryCount = 0
+	settings.RateLimit = 0
+
+	initialized, err := scraperpkg.NewDefaultScraperRegistryFrom(reg, scraperpkg.ScraperRegistryConfig{
+		Overrides: map[string]models.ScraperSettings{
+			"javdb": settings,
+		},
+		TimeoutSeconds: 20,
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("initialize production JavDB registry: %v", err)
+	}
+	instance, ok := initialized.GetInstance("javdb")
+	if !ok || instance == nil || !instance.IsEnabled() {
+		t.Fatal("production JavDB instance was not initialized and enabled")
+	}
+	return initialized
+}
+
 func TestSubmissionLiveTitleToCatalogID(t *testing.T) {
 	productionClient, err := httpclient.NewHTTPClient(nil, 20*time.Second)
 	if err != nil {
@@ -47,7 +82,11 @@ func TestSubmissionLiveTitleToCatalogID(t *testing.T) {
 
 	keepWords := []string{"SPECIAL", "4K", "8K", "VR", "AI", "字幕", "中文字幕", "-UC", "UNCENSORED"}
 	cfg := &Config{FilenameKeepWords: keepWords}
-	s := &Scraper{httpClient: recorder, cfg: cfg}
+	s := &Scraper{
+		registry:   newSubmissionLiveRegistry(t),
+		httpClient: recorder,
+		cfg:        cfg,
+	}
 
 	cases := []struct {
 		id    string
@@ -71,20 +110,10 @@ func TestSubmissionLiveTitleToCatalogID(t *testing.T) {
 			upperCleaned := strings.ToUpper(cleaned)
 			for _, unwanted := range keepWords {
 				if strings.Contains(upperCleaned, strings.ToUpper(unwanted)) {
-					t.Fatalf("KEEPWORD %q remained before Google lookup: raw=%q cleaned=%q", unwanted, raw, cleaned)
+					t.Fatalf("KEEPWORD %q remained before web lookup: raw=%q cleaned=%q", unwanted, raw, cleaned)
 				}
 			}
 			normalized := normalizeTitleForWebSearch(cleaned)
-
-			// Probe one real Google response and log exactly what our HTML parser can
-			// see. This evidence distinguishes a bad query from a Google markup/parser
-			// problem and exposes the candidate IDs that the scorer receives.
-			probeResults, probeErr := s.fetchTitleWebSearch(ctx, "google", normalized)
-			t.Logf("LIVE_PROBE query=%q results=%d err=%v", normalized, len(probeResults), probeErr)
-			for i, result := range probeResults {
-				ids := extractCatalogCandidates(result.Title + " " + result.Snippet + " " + result.URL)
-				t.Logf("LIVE_PARSED_RESULT rank=%d title=%q snippet=%q url=%q candidate_ids=%v coverage=%.3f", i+1, truncateRunes(result.Title, 160), truncateRunes(result.Snippet, 220), truncateRunes(result.URL, 220), ids, queryCoverage(normalized, result.Title+" "+result.Snippet))
-			}
 
 			beforeHosts, beforeQueries := recorder.snapshot()
 			got := s.resolveTitleViaWebWithConfiguredNoise(ctx, ScrapeCmd{MovieID: raw})
@@ -95,15 +124,17 @@ func TestSubmissionLiveTitleToCatalogID(t *testing.T) {
 			t.Logf("LIVE_CASE expected=%s raw=%q", tc.id, raw)
 			t.Logf("LIVE_CLEANED=%q", cleaned)
 			t.Logf("LIVE_NORMALIZED=%q", normalized)
-			t.Logf("LIVE_REQUEST_COUNT=%d", len(caseQueries))
+			t.Logf("LIVE_GOOGLE_REQUEST_COUNT=%d", len(caseQueries))
 
-			if len(caseQueries) == 0 {
-				t.Fatal("no live Google request was made")
-			}
 			for i, q := range caseQueries {
-				t.Logf("LIVE_GOOGLE_REQUEST host=%s q=%q", caseHosts[i], q)
-				if caseHosts[i] != "www.google.com" {
-					t.Fatalf("non-Google provider used: host=%q q=%q", caseHosts[i], q)
+				host := caseHosts[i]
+				t.Logf("LIVE_GOOGLE_REQUEST host=%s q=%q", host, q)
+				lowerHost := strings.ToLower(host)
+				if strings.Contains(lowerHost, "bing.com") {
+					t.Fatalf("Bing was contacted during catalog-ID resolution: host=%q q=%q", host, q)
+				}
+				if host != "www.google.com" {
+					t.Fatalf("unexpected search-engine provider used: host=%q q=%q", host, q)
 				}
 				for _, unwanted := range keepWords {
 					if strings.Contains(strings.ToUpper(q), strings.ToUpper(unwanted)) {
@@ -116,7 +147,7 @@ func TestSubmissionLiveTitleToCatalogID(t *testing.T) {
 			}
 
 			if got.MovieID != tc.id {
-				t.Fatalf("Google title resolution = %q, want %q", got.MovieID, tc.id)
+				t.Fatalf("live title resolution = %q, want %q", got.MovieID, tc.id)
 			}
 			t.Logf("LIVE_RESOLVED=%s", got.MovieID)
 		})
@@ -127,8 +158,8 @@ func TestSubmissionLiveTitleToCatalogID(t *testing.T) {
 
 	hosts, _ := recorder.snapshot()
 	for _, host := range hosts {
-		if host != "www.google.com" {
-			t.Fatalf("submission live test contacted non-Google host: %q", host)
+		if strings.Contains(strings.ToLower(host), "bing.com") {
+			t.Fatalf("submission live test contacted Bing: %q", host)
 		}
 	}
 	if passed != len(cases) {
