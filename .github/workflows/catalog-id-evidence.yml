@@ -22,7 +22,7 @@ jobs:
       - name: Test catalog evidence and DMM normalization
         shell: pwsh
         run: |
-          go test -v -tags 'keepwords' ./internal/scrape -run '^(TestGoogleIsTheOnlySupportedWebProvider|TestBuildTitleWebQueriesPreservesFastPathAndAddsTargetedQueries|TestTrustedDMMCompactContentIDNormalizesToCatalogID|TestTrustedURLCompactIDSupportsMakerPrefix|TestUntrustedCompactURLDoesNotBecomeCatalogID|TestTrustedCatalogSourceRejectsSpoofedHost|TestWeakUnrelatedTrustedURLStillRejected|TestCorroboratedCandidateBeatsSingleCompetitor|TestVerifiedDirectFallbackIgnoresUnrelatedGoogleResults|TestVerifiedDirectFallbackRejectsStrongConflictingGoogleEvidence)$' -count=1
+          go test -v -tags 'keepwords' ./internal/scrape -run '^(TestGoogleIsTheOnlySupportedWebProvider|TestBuildTitleWebQueriesPreservesFastPathAndAddsTargetedQueries|TestTrustedDMMCompactContentIDNormalizesToCatalogID|TestTrustedURLCompactIDSupportsMakerPrefix|TestUntrustedCompactURLDoesNotBecomeCatalogID|TestTrustedCatalogSourceRejectsSpoofedHost|TestWeakUnrelatedTrustedURLStillRejected|TestCorroboratedCandidateBeatsSingleCompetitor|TestVerifiedDirectFallbackIgnoresUnrelatedGoogleResults|TestVerifiedDirectFallbackRejectsStrongConflictingGoogleEvidence|TestChooseExactDirectTitleCandidateSelectsUniqueExactDetailTitle|TestChooseExactDirectTitleCandidateRejectsDuplicateExactTitles|TestChooseExactDirectTitleCandidateRejectsUntrustedExactTitle|TestChooseExactDirectTitleCandidateRejectsAmbiguousRowIDs)$' -count=1
           if ($LASTEXITCODE -ne 0) { throw 'catalog evidence tests failed' }
 
       - name: Test direct JavDB title evidence
