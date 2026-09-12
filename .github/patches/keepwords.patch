@@ -1,0 +1,32 @@
+diff --git a/internal/template/engine.go b/internal/template/engine.go
+--- a/internal/template/engine.go
++++ b/internal/template/engine.go
+@@ -499,7 +499,7 @@ func strictDigitModifier(modifier string) bool {
+ // resolveTag switch and every entry in the tag registry.
+ func (e *Engine) isKnownTag(tagName string) bool {
+ 	switch tagName {
+-	case "ACTORS", "ACTRESSES", "ACTRESS", "ACTORNAME", "ACTRESSNAME":
++	case "ACTORS", "ACTRESSES", "ACTRESS", "ACTORNAME", "ACTRESSNAME", "KEEPWORDS":
+ 		return true
+ 	}
+ 	_, ok := e.tagRegistry[tagName]
+@@ -534,6 +534,8 @@ func (e *Engine) resolveTag(tagName, modifier string, ctx *Context) (string, error) {
+ 	// the modifier at resolution time, so they bypass the registry/applyModifier
+ 	// split (which keeps modifier handling context-free).
+ 	switch tagName {
++	case "KEEPWORDS":
++		return resolveKeepWordsTag(modifier, ctx), nil
+ 	case "ACTORS", "ACTRESSES":
+ 		return e.resolveActressListTag(modifier, ctx), nil
+ 	case "ACTRESS", "ACTORNAME", "ACTRESSNAME":
+diff --git a/web/frontend/src/lib/components/settings/sections/OutputSettingsSection.svelte b/web/frontend/src/lib/components/settings/sections/OutputSettingsSection.svelte
+--- a/web/frontend/src/lib/components/settings/sections/OutputSettingsSection.svelte
++++ b/web/frontend/src/lib/components/settings/sections/OutputSettingsSection.svelte
+@@ -17,6 +17,7 @@
+ 
+ 	const NAMING_TEMPLATE_TAGS = [
+ 		'<ID>',
++		'<KEEPWORDS:>',
+ 		'<TITLE>',
+ 		'<ORIGINALTITLE>',
+ 		'<STUDIO>',

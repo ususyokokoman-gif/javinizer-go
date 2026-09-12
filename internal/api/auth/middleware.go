@@ -55,7 +55,26 @@ func resolveAuth(c *gin.Context, rt *core.APIRuntime) (deps *core.APIDeps, handl
 		return nil, true
 	}
 	deps = rt.Deps()
-	if deps == nil || deps.Auth == nil {
+	if deps == nil {
+		c.AbortWithStatusJSON(http.StatusServiceUnavailable, contracts.ErrorResponse{
+			Error: "authentication is unavailable",
+		})
+		return nil, true
+	}
+
+	// Desktop builds bind their embedded API to 127.0.0.1. For an actual
+	// loopback TCP peer, authentication adds no useful protection and creates a
+	// password-recovery failure mode for a single-user local application. The
+	// build-tagged helper is always false outside desktop builds and never trusts
+	// forwarding headers.
+	if isDesktopLocalRequest(c.Request) {
+		c.Set("auth_method", "desktop_local")
+		c.Set("auth_username", "local")
+		c.Next()
+		return deps, true
+	}
+
+	if deps.Auth == nil {
 		c.AbortWithStatusJSON(http.StatusServiceUnavailable, contracts.ErrorResponse{
 			Error: "authentication is unavailable",
 		})
