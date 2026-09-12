@@ -186,19 +186,33 @@ func normalizeCompactTrustedCatalogID(raw string) string {
 	return normalizeWebCatalogCandidate(prefix + "-" + digits)
 }
 
-func candidateHasTrustedEvidence(id string, results []titleWebSearchResult) bool {
+func candidateTrustedSources(id string, results []titleWebSearchResult) map[string]struct{} {
+	sources := make(map[string]struct{})
+	want := catalogComparable(id)
+	if want == "" {
+		return sources
+	}
 	for _, result := range results {
-		if trustedCatalogSource(result.URL) == "" {
+		source := trustedCatalogSource(result.URL)
+		if source == "" {
 			continue
 		}
-		if containsCatalogID(result.Title, id) || containsCatalogID(result.Snippet, id) {
-			return true
-		}
-		for _, urlID := range extractTrustedURLCatalogCandidates(result.URL) {
-			if catalogComparable(urlID) == catalogComparable(id) {
-				return true
+		matched := containsCatalogID(result.Title, id) || containsCatalogID(result.Snippet, id)
+		if !matched {
+			for _, urlID := range extractTrustedURLCatalogCandidates(result.URL) {
+				if catalogComparable(urlID) == want {
+					matched = true
+					break
+				}
 			}
 		}
+		if matched {
+			sources[source] = struct{}{}
+		}
 	}
-	return false
+	return sources
+}
+
+func candidateHasTrustedEvidence(id string, results []titleWebSearchResult) bool {
+	return len(candidateTrustedSources(id, results)) > 0
 }
