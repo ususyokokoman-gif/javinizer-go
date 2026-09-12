@@ -88,15 +88,18 @@ func TestSubmissionLiveTitleToCatalogID(t *testing.T) {
 		cfg:        cfg,
 	}
 
+	// Positive live cases must contain enough title information to identify one
+	// work. Some series reuse the same base title across multiple catalog IDs;
+	// those ambiguous base titles are intentionally not guessed by production.
 	cases := []struct {
 		id    string
 		title string
 	}{
 		{"SSIS-001", "一ヶ月間の禁欲の果てに彼女のルームメイト2人と浮気SEXだけに没頭した彼女不在の3日間"},
-		{"MIDE-007", "今日、あなたの上司に犯されました。"},
+		{"MIDE-007", "今日、あなたの上司に犯されました。 大橋未久"},
 		{"IPZ-508", "背徳の檻 幸せな二組の夫婦を襲う禁断の監禁強制スワッピング凌襲 美波なみ 愛田奈々"},
 		{"SNIS-323", "わたし、犯されにゆきます。～弟想いの美しき姉編～"},
-		{"IPX-072", "狙われた通学路共謀痴漢電車"},
+		{"IPX-072", "狙われた通学路 共謀痴漢電車 桃乃木かな"},
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
