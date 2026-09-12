@@ -117,3 +117,32 @@ func TestCorroboratedCandidateBeatsSingleCompetitor(t *testing.T) {
 		t.Fatalf("candidate = %q, want SSIS-001", got)
 	}
 }
+
+func TestVerifiedDirectFallbackIgnoresUnrelatedGoogleResults(t *testing.T) {
+	query := "完全な日本語タイトル"
+	google := []titleWebSearchResult{
+		{Title: "まったく別の作品", Snippet: "検索ノイズ", URL: "https://example.com/noise"},
+		{Title: "Google help", Snippet: "検索について", URL: "https://support.google.com/example"},
+	}
+	got, err := chooseVerifiedDirectFallback(query, "SSIS-001", google)
+	if err != nil {
+		t.Fatalf("fallback unexpectedly failed: %v", err)
+	}
+	if got != "SSIS-001" {
+		t.Fatalf("fallback = %q, want SSIS-001", got)
+	}
+}
+
+func TestVerifiedDirectFallbackRejectsStrongConflictingGoogleEvidence(t *testing.T) {
+	query := "完全な日本語タイトル"
+	google := []titleWebSearchResult{
+		{
+			Title:   query + " SSIS-002",
+			Snippet: "品番 SSIS-002",
+			URL:     "https://www.dmm.co.jp/digital/videoa/-/detail/=/cid=ssis00002/",
+		},
+	}
+	if got, err := chooseVerifiedDirectFallback(query, "SSIS-001", google); err == nil {
+		t.Fatalf("conflicting Google evidence returned %q without error", got)
+	}
+}
