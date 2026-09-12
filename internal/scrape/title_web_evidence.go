@@ -99,8 +99,8 @@ func isKnownJAVResultURLStrict(raw string) bool {
 }
 
 // extractTrustedURLCatalogCandidates deliberately refuses to inspect arbitrary
-// URLs. This prevents search-engine redirect/tracking tokens (for example
-// 9DB6-61A) from ever entering the catalog-ID candidate set.
+// URLs. It only examines individual path/query tokens from trusted hosts, so a
+// search-engine redirect or a maker prefix can never become a phantom catalog ID.
 func extractTrustedURLCatalogCandidates(raw string) []string {
 	source := trustedCatalogSource(raw)
 	if source == "" {
@@ -119,7 +119,6 @@ func extractTrustedURLCatalogCandidates(raw string) []string {
 		}
 		pieces = append(pieces, values...)
 	}
-	joined := strings.Join(pieces, " ")
 	// DMM/FANZA encode cid inside path segments such as /=/cid=ssis00001/.
 	if source == "dmm" || source == "fanza" {
 		if idx := strings.Index(strings.ToLower(decodedPath), "cid="); idx >= 0 {
@@ -128,7 +127,6 @@ func extractTrustedURLCatalogCandidates(raw string) []string {
 				tail = tail[:cut]
 			}
 			pieces = append(pieces, tail)
-			joined += " " + tail
 		}
 	}
 
@@ -150,13 +148,21 @@ func extractTrustedURLCatalogCandidates(raw string) []string {
 		for _, token := range strings.FieldsFunc(piece, func(r rune) bool {
 			return r == '/' || r == '=' || r == '&' || r == '?' || r == '#' || r == ':' || r == ';'
 		}) {
+			token = strings.TrimSpace(token)
+			if token == "" {
+				continue
+			}
+			// DMM compact forms (ssis00001, h_086ssis001) must be handled
+			// before the generic parser, otherwise h_086 can be mistaken for
+			// a real H-086... catalog prefix.
 			if id := normalizeCompactTrustedCatalogID(token); id != "" {
+				appendID(id)
+				continue
+			}
+			for _, id := range extractCatalogCandidates(token) {
 				appendID(id)
 			}
 		}
-	}
-	for _, id := range extractCatalogCandidates(joined) {
-		appendID(id)
 	}
 	return out
 }
