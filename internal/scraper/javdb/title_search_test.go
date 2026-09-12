@@ -2,6 +2,7 @@ package javdb
 
 import (
 	"context"
+	"net/url"
 	"testing"
 
 	"github.com/go-resty/resty/v2"
@@ -11,9 +12,10 @@ import (
 
 func TestSearchTitleCandidatesVerifiesDetailPageID(t *testing.T) {
 	const title = "一ヶ月間の禁欲の果てに彼女のルームメイト2人と浮気SEXだけに没頭した彼女不在の3日間"
+	searchURL := "https://javdb.test/search?q=" + url.QueryEscape(title) + "&f=all"
 	client := resty.New()
 	client.SetTransport(&staticRoundTripper{responses: map[string]string{
-		"https://javdb.test/search?q=%E4%B8%80%E3%83%B6%E6%9C%88%E9%96%93%E3%81%AE%E7%A6%81%E6%AC%B2%E3%81%AE%E6%9E%9C%E3%81%A6%E3%81%AB%E5%BD%BC%E5%A5%B3%E3%81%AE%E3%83%AB%E3%83%BC%E3%83%A0%E3%83%A1%E3%82%A4%E3%83%882%E4%BA%BA%E3%81%A8%E6%B5%AE%E6%B0%97SEX%E3%81%A0%E3%81%91%E3%81%AB%E6%B2%A1%E9%A0%AD%E3%81%97%E3%81%9F%E5%BD%BC%E5%A5%B3%E4%B8%8D%E5%9C%A8%E3%81%AE3%E6%97%A5%E9%96%93&f=all": `
+		searchURL: `
 			<html><body><div class="movie-list">
 			  <div class="item"><a class="box" href="/v/good"><div class="uid">SSIS-001</div><div class="video-title">SSIS-001 ` + title + `</div></a></div>
 			  <div class="item"><a class="box" href="/v/bad"><div class="uid">XYZ-999</div><div class="video-title">XYZ-999 まったく別の作品</div></a></div>
