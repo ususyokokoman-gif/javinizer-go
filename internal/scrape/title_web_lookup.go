@@ -115,7 +115,7 @@ func retryGoogleSearchWithBrowser(ctx context.Context, endpoint, reason string, 
 
 func (s *Scraper) fetchTitleWebSearch(ctx context.Context, provider, query string) ([]titleWebSearchResult, error) {
 	if provider != "google" {
-		return nil, fmt.Errorf("unsupported web search provider %q; Google is the only direct provider", provider)
+		return nil, fmt.Errorf("unsupported web search provider %q; Google is the only provider", provider)
 	}
 	endpoint := "https://www.google.com/search?hl=ja&num=10&filter=0&pws=0&safe=off&q=" + url.QueryEscape(query)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
