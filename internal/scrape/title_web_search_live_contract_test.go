@@ -88,6 +88,37 @@ func TestSubmissionLiveTitleToCatalogID(t *testing.T) {
 		cfg:        cfg,
 	}
 
+	// This preflight is deliberately independent from JavDB/direct metadata.
+	// A final catalog ID is not enough proof: the distribution gate must prove
+	// that the production Google-search path itself can retrieve real results.
+	strictTitle := "一ヶ月間の禁欲の果てに彼女のルームメイト2人と浮気SEXだけに没頭した彼女不在の3日間"
+	strictCtx, strictCancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer strictCancel()
+	strictOrganicResults := 0
+	strictQueries := 0
+	var strictErrors []string
+	for _, q := range buildTitleWebQueries(strictTitle) {
+		strictQueries++
+		results, searchErr := s.fetchTitleWebSearch(strictCtx, "google", q)
+		if searchErr != nil {
+			strictErrors = append(strictErrors, searchErr.Error())
+			t.Logf("LIVE_GOOGLE_STRICT query=%q error=%v", q, searchErr)
+			continue
+		}
+		t.Logf("LIVE_GOOGLE_STRICT query=%q organic_results=%d", q, len(results))
+		if len(results) > 0 {
+			strictOrganicResults += len(results)
+			break
+		}
+	}
+	if strictQueries == 0 {
+		t.Fatal("LIVE_GOOGLE_STRICT_FAIL: no Google query was generated")
+	}
+	if strictOrganicResults == 0 {
+		t.Fatalf("LIVE_GOOGLE_STRICT_FAIL: Google returned no usable search results; errors=%v", strictErrors)
+	}
+	t.Logf("LIVE_GOOGLE_STRICT_PASS organic_results=%d", strictOrganicResults)
+
 	// Positive live cases must contain enough title information to identify one
 	// work. Some series reuse the same base title across multiple catalog IDs;
 	// those ambiguous base titles are intentionally not guessed by production.
@@ -128,6 +159,9 @@ func TestSubmissionLiveTitleToCatalogID(t *testing.T) {
 			t.Logf("LIVE_CLEANED=%q", cleaned)
 			t.Logf("LIVE_NORMALIZED=%q", normalized)
 			t.Logf("LIVE_GOOGLE_REQUEST_COUNT=%d", len(caseQueries))
+			if len(caseQueries) == 0 {
+				t.Fatalf("LIVE_GOOGLE_REQUEST_FAIL: catalog ID %s was resolved without issuing any Google request", tc.id)
+			}
 
 			for i, q := range caseQueries {
 				host := caseHosts[i]
