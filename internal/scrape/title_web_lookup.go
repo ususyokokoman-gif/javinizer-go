@@ -33,7 +33,7 @@ func (s *Scraper) lookupCatalogIDOnWeb(ctx context.Context, title string) (strin
 		// If two or more verified detail pages are compatible with the supplied
 		// title, the local filename itself does not identify one work. Search-
 		// engine rank is not evidence of user intent, so fail closed instead of
-		// allowing Google to arbitrarily break the tie.
+		// allowing a search engine to arbitrarily break the tie.
 		if directTitleEvidenceIsAmbiguous(title, directEvidence) {
 			return "", fmt.Errorf("ambiguous title matches multiple verified catalog IDs")
 		}
@@ -45,17 +45,17 @@ func (s *Scraper) lookupCatalogIDOnWeb(ctx context.Context, title string) (strin
 
 	queries := buildTitleWebQueries(title)
 	var lastErr error
-	var googleEvidence []titleWebSearchResult
+	var webEvidence []titleWebSearchResult
 	for _, q := range queries {
-		results, err := s.fetchTitleWebSearch(ctx, "google", q)
+		results, provider, err := s.fetchGeneralTitleWebSearch(ctx, q)
 		if err != nil {
 			lastErr = err
-			logging.Infof("[scrape] Google search query=%q failed: %v", truncateRunes(q, 120), err)
+			logging.Infof("[scrape] general web search query=%q failed: %v", truncateRunes(q, 120), err)
 			continue
 		}
-		googleEvidence = mergeTitleWebResults(googleEvidence, results)
+		webEvidence = mergeTitleWebResults(webEvidence, results)
 		merged = mergeTitleWebResults(merged, results)
-		logging.Infof("[scrape] Google search query=%q results=%d merged=%d", truncateRunes(q, 120), len(results), len(merged))
+		logging.Infof("[scrape] web search provider=%s query=%q results=%d merged=%d", provider, truncateRunes(q, 120), len(results), len(merged))
 		if id, ok := chooseCatalogCandidate(title, merged); ok && candidateHasTrustedEvidence(id, merged) {
 			if !directOK {
 				return id, nil
@@ -77,22 +77,22 @@ func (s *Scraper) lookupCatalogIDOnWeb(ctx context.Context, title string) (strin
 		return "", fmt.Errorf("no sufficiently corroborated catalog-ID candidate")
 	}
 
-	id, err := chooseVerifiedDirectFallback(title, directID, googleEvidence)
+	id, err := chooseVerifiedDirectFallback(title, directID, webEvidence)
 	if err != nil {
 		return "", err
 	}
-	logging.Infof("[scrape] using verified direct title candidate %s after no conflicting strong Google evidence was found", id)
+	logging.Infof("[scrape] using verified direct title candidate %s after no conflicting strong web evidence was found", id)
 	return id, nil
 }
 
-func chooseVerifiedDirectFallback(title, directID string, googleEvidence []titleWebSearchResult) (string, error) {
+func chooseVerifiedDirectFallback(title, directID string, webEvidence []titleWebSearchResult) (string, error) {
 	directID = normalizeWebCatalogCandidate(directID)
 	if directID == "" {
 		return "", fmt.Errorf("verified direct title candidate is empty")
 	}
-	googleID, googleOK := chooseCatalogCandidate(title, googleEvidence)
-	if googleOK && catalogComparable(googleID) != catalogComparable(directID) {
-		return "", fmt.Errorf("direct title candidate %s conflicts with Google evidence for %s", directID, googleID)
+	webID, webOK := chooseCatalogCandidate(title, webEvidence)
+	if webOK && catalogComparable(webID) != catalogComparable(directID) {
+		return "", fmt.Errorf("direct title candidate %s conflicts with web evidence for %s", directID, webID)
 	}
 	return directID, nil
 }
@@ -115,7 +115,7 @@ func retryGoogleSearchWithBrowser(ctx context.Context, endpoint, reason string, 
 
 func (s *Scraper) fetchTitleWebSearch(ctx context.Context, provider, query string) ([]titleWebSearchResult, error) {
 	if provider != "google" {
-		return nil, fmt.Errorf("unsupported web search provider %q; Google is the only provider", provider)
+		return nil, fmt.Errorf("unsupported web search provider %q; Google is the only direct provider", provider)
 	}
 	endpoint := "https://www.google.com/search?hl=ja&num=10&filter=0&pws=0&safe=off&q=" + url.QueryEscape(query)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
