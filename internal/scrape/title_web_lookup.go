@@ -99,6 +99,18 @@ func shouldUseHeadlessGoogleFallback(statusCode int) bool {
 	return statusCode == http.StatusTooManyRequests || statusCode == http.StatusForbidden
 }
 
+func retryGoogleSearchWithBrowser(ctx context.Context, endpoint, reason string, originalErr error) ([]titleWebSearchResult, error) {
+	logging.Infof("[scrape] Google HTTP search %s; retrying with headless browser", reason)
+	results, browserErr := fetchGoogleSearchWithHeadlessBrowser(ctx, endpoint)
+	if browserErr == nil {
+		return results, nil
+	}
+	if originalErr != nil {
+		return nil, fmt.Errorf("Google HTTP search failed: %w; browser fallback failed: %v", originalErr, browserErr)
+	}
+	return nil, fmt.Errorf("Google HTTP search %s; browser fallback failed: %w", reason, browserErr)
+}
+
 func (s *Scraper) fetchTitleWebSearch(ctx context.Context, provider, query string) ([]titleWebSearchResult, error) {
 	if provider != "google" {
 		return nil, fmt.Errorf("unsupported web search provider %q; Google is the only provider", provider)
@@ -117,26 +129,31 @@ func (s *Scraper) fetchTitleWebSearch(ctx context.Context, provider, query strin
 	req.Header.Set("Accept-Language", "ja-JP,ja;q=0.9,en-US;q=0.7,en;q=0.5")
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("Google search request failed: %w", err)
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("Google search request failed: %w", err)
+		}
+		return retryGoogleSearchWithBrowser(ctx, endpoint, "request failed", err)
 	}
 	if resp == nil {
-		return nil, fmt.Errorf("Google search returned nil response")
+		return retryGoogleSearchWithBrowser(ctx, endpoint, "returned nil response", nil)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		if shouldUseHeadlessGoogleFallback(resp.StatusCode) {
-			logging.Infof("[scrape] Google search returned HTTP %d; retrying with headless browser", resp.StatusCode)
-			return fetchGoogleSearchWithHeadlessBrowser(ctx, endpoint)
+			return retryGoogleSearchWithBrowser(ctx, endpoint, fmt.Sprintf("returned HTTP %d", resp.StatusCode), nil)
 		}
 		return nil, fmt.Errorf("Google search returned HTTP %d", resp.StatusCode)
 	}
 	doc, err := goquery.NewDocumentFromReader(io.LimitReader(resp.Body, maxWebSearchBody))
 	if err != nil {
-		return nil, fmt.Errorf("parse Google search page: %w", err)
+		return retryGoogleSearchWithBrowser(ctx, endpoint, "returned unparsable HTML", err)
 	}
 	results := parseTitleWebResults("google", doc)
 	if isGoogleSearchInterstitial(doc, results) {
-		return fetchGoogleSearchWithHeadlessBrowser(ctx, endpoint)
+		return retryGoogleSearchWithBrowser(ctx, endpoint, "returned an interstitial instead of search results", nil)
+	}
+	if len(results) == 0 {
+		return retryGoogleSearchWithBrowser(ctx, endpoint, "returned no parseable organic results", nil)
 	}
 	return results, nil
 }
