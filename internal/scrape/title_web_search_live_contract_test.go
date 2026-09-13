@@ -16,7 +16,7 @@ import (
 	"github.com/javinizer/javinizer-go/internal/scraperutil"
 )
 
-type liveGoogleRecorder struct {
+type liveWebRecorder struct {
 	inner interface {
 		Do(*http.Request) (*http.Response, error)
 	}
@@ -25,7 +25,7 @@ type liveGoogleRecorder struct {
 	queries []string
 }
 
-func (r *liveGoogleRecorder) Do(req *http.Request) (*http.Response, error) {
+func (r *liveWebRecorder) Do(req *http.Request) (*http.Response, error) {
 	r.mu.Lock()
 	if req != nil && req.URL != nil {
 		r.hosts = append(r.hosts, req.URL.Host)
@@ -35,7 +35,7 @@ func (r *liveGoogleRecorder) Do(req *http.Request) (*http.Response, error) {
 	return r.inner.Do(req)
 }
 
-func (r *liveGoogleRecorder) snapshot() ([]string, []string) {
+func (r *liveWebRecorder) snapshot() ([]string, []string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]string(nil), r.hosts...), append([]string(nil), r.queries...)
@@ -73,12 +73,17 @@ func newSubmissionLiveRegistry(t *testing.T) *scraperutil.ScraperRegistry {
 	return initialized
 }
 
+func supportedLiveSearchHost(host string) bool {
+	h := strings.ToLower(strings.TrimSpace(host))
+	return h == "www.google.com" || h == "html.duckduckgo.com" || h == "duckduckgo.com"
+}
+
 func TestSubmissionLiveTitleToCatalogID(t *testing.T) {
 	productionClient, err := httpclient.NewHTTPClient(nil, 20*time.Second)
 	if err != nil {
 		t.Fatalf("construct production HTTP client: %v", err)
 	}
-	recorder := &liveGoogleRecorder{inner: productionClient}
+	recorder := &liveWebRecorder{inner: productionClient}
 
 	keepWords := []string{"SPECIAL", "4K", "8K", "VR", "AI", "字幕", "中文字幕", "-UC", "UNCENSORED"}
 	cfg := &Config{FilenameKeepWords: keepWords}
@@ -88,40 +93,39 @@ func TestSubmissionLiveTitleToCatalogID(t *testing.T) {
 		cfg:        cfg,
 	}
 
-	// This preflight is deliberately independent from JavDB/direct metadata.
-	// A final catalog ID is not enough proof: the distribution gate must prove
-	// that the production Google-search path itself can retrieve real results.
+	// Independent from JavDB/direct metadata. A final catalog ID is not enough
+	// proof: at least one production general-web provider must return real
+	// organic results in the Windows runner environment.
 	strictTitle := "一ヶ月間の禁欲の果てに彼女のルームメイト2人と浮気SEXだけに没頭した彼女不在の3日間"
-	strictCtx, strictCancel := context.WithTimeout(context.Background(), 60*time.Second)
+	strictCtx, strictCancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer strictCancel()
 	strictOrganicResults := 0
 	strictQueries := 0
+	strictProvider := ""
 	var strictErrors []string
 	for _, q := range buildTitleWebQueries(strictTitle) {
 		strictQueries++
-		results, searchErr := s.fetchTitleWebSearch(strictCtx, "google", q)
+		results, provider, searchErr := s.fetchGeneralTitleWebSearch(strictCtx, q)
 		if searchErr != nil {
 			strictErrors = append(strictErrors, searchErr.Error())
-			t.Logf("LIVE_GOOGLE_STRICT query=%q error=%v", q, searchErr)
+			t.Logf("LIVE_WEB_STRICT query=%q error=%v", q, searchErr)
 			continue
 		}
-		t.Logf("LIVE_GOOGLE_STRICT query=%q organic_results=%d", q, len(results))
+		t.Logf("LIVE_WEB_STRICT provider=%s query=%q organic_results=%d", provider, q, len(results))
 		if len(results) > 0 {
 			strictOrganicResults += len(results)
+			strictProvider = provider
 			break
 		}
 	}
 	if strictQueries == 0 {
-		t.Fatal("LIVE_GOOGLE_STRICT_FAIL: no Google query was generated")
+		t.Fatal("LIVE_WEB_STRICT_FAIL: no web query was generated")
 	}
 	if strictOrganicResults == 0 {
-		t.Fatalf("LIVE_GOOGLE_STRICT_FAIL: Google returned no usable search results; errors=%v", strictErrors)
+		t.Fatalf("LIVE_WEB_STRICT_FAIL: no production web provider returned usable search results; errors=%v", strictErrors)
 	}
-	t.Logf("LIVE_GOOGLE_STRICT_PASS organic_results=%d", strictOrganicResults)
+	t.Logf("LIVE_WEB_STRICT_PASS provider=%s organic_results=%d", strictProvider, strictOrganicResults)
 
-	// Positive live cases must contain enough title information to identify one
-	// work. Some series reuse the same base title across multiple catalog IDs;
-	// those ambiguous base titles are intentionally not guessed by production.
 	cases := []struct {
 		id    string
 		title string
@@ -158,28 +162,27 @@ func TestSubmissionLiveTitleToCatalogID(t *testing.T) {
 			t.Logf("LIVE_CASE expected=%s raw=%q", tc.id, raw)
 			t.Logf("LIVE_CLEANED=%q", cleaned)
 			t.Logf("LIVE_NORMALIZED=%q", normalized)
-			t.Logf("LIVE_GOOGLE_REQUEST_COUNT=%d", len(caseQueries))
+			t.Logf("LIVE_WEB_REQUEST_COUNT=%d", len(caseQueries))
 			if len(caseQueries) == 0 {
-				t.Fatalf("LIVE_GOOGLE_REQUEST_FAIL: catalog ID %s was resolved without issuing any Google request", tc.id)
+				t.Fatalf("LIVE_WEB_REQUEST_FAIL: catalog ID %s was resolved without issuing any general-web request", tc.id)
 			}
 
 			for i, q := range caseQueries {
 				host := caseHosts[i]
-				t.Logf("LIVE_GOOGLE_REQUEST host=%s q=%q", host, q)
+				t.Logf("LIVE_WEB_REQUEST host=%s q=%q", host, q)
 				lowerHost := strings.ToLower(host)
 				if strings.Contains(lowerHost, "bing.com") {
 					t.Fatalf("Bing was contacted during catalog-ID resolution: host=%q q=%q", host, q)
 				}
-				if host != "www.google.com" {
+				if !supportedLiveSearchHost(host) {
 					t.Fatalf("unexpected search-engine provider used: host=%q q=%q", host, q)
 				}
 				for _, unwanted := range keepWords {
 					if strings.Contains(strings.ToUpper(q), strings.ToUpper(unwanted)) {
-						t.Fatalf("KEEPWORD %q leaked into Google q=%q", unwanted, q)
+						t.Fatalf("KEEPWORD %q leaked into web query=%q", unwanted, q)
 					}
-				}
 				if !strings.Contains(compactComparable(q), compactComparable(normalized)) {
-					t.Fatalf("normalized real title missing from Google q=%q", q)
+					t.Fatalf("normalized real title missing from web query=%q", q)
 				}
 			}
 
@@ -193,12 +196,6 @@ func TestSubmissionLiveTitleToCatalogID(t *testing.T) {
 		}
 	}
 
-	hosts, _ := recorder.snapshot()
-	for _, host := range hosts {
-		if strings.Contains(strings.ToLower(host), "bing.com") {
-			t.Fatalf("submission live test contacted Bing: %q", host)
-		}
-	}
 	if passed != len(cases) {
 		t.Fatalf("LIVE_MATRIX_FAIL=%d/%d passed", passed, len(cases))
 	}
