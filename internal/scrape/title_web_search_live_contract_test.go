@@ -181,6 +181,7 @@ func TestSubmissionLiveTitleToCatalogID(t *testing.T) {
 					if strings.Contains(strings.ToUpper(q), strings.ToUpper(unwanted)) {
 						t.Fatalf("KEEPWORD %q leaked into web query=%q", unwanted, q)
 					}
+				}
 				if !strings.Contains(compactComparable(q), compactComparable(normalized)) {
 					t.Fatalf("normalized real title missing from web query=%q", q)
 				}
