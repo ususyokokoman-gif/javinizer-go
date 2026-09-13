@@ -12,6 +12,8 @@ import (
 	"github.com/javinizer/javinizer-go/internal/logging"
 )
 
+var googleBrowserFallback = fetchGoogleSearchWithHeadlessBrowser
+
 func (s *Scraper) lookupCatalogIDOnWeb(ctx context.Context, title string) (string, error) {
 	// First ask metadata sources that can search by title directly. A JavDB
 	// candidate is re-opened as a detail page before it reaches this layer, so
@@ -101,7 +103,7 @@ func shouldUseHeadlessGoogleFallback(statusCode int) bool {
 
 func retryGoogleSearchWithBrowser(ctx context.Context, endpoint, reason string, originalErr error) ([]titleWebSearchResult, error) {
 	logging.Infof("[scrape] Google HTTP search %s; retrying with headless browser", reason)
-	results, browserErr := fetchGoogleSearchWithHeadlessBrowser(ctx, endpoint)
+	results, browserErr := googleBrowserFallback(ctx, endpoint)
 	if browserErr == nil {
 		return results, nil
 	}
