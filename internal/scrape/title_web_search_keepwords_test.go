@@ -111,9 +111,15 @@ func TestGoogleIsTheOnlySupportedWebProvider(t *testing.T) {
 	require.Zero(t, client.calls)
 }
 
-func TestResolveTitleViaWebRetriesOnlyGoogleQueryVariants(t *testing.T) {
+func TestResolveTitleViaWebRetriesGoogleQueryVariantsAfterFallbackMiss(t *testing.T) {
+	// The first Google query fails with 503. The general-search layer then tries
+	// both DuckDuckGo HTML endpoints, which also return no organic result. The
+	// resolver must continue to the next Google query variant rather than stop
+	// or launch a real browser from this deterministic regression test.
 	client := &titleWebFakeHTTPClient{responses: []titleWebFakeResponse{
 		{status: http.StatusServiceUnavailable, body: ""},
+		{status: http.StatusOK, body: ""},
+		{status: http.StatusOK, body: ""},
 		{status: http.StatusOK, body: googleResultHTML("SSIS-999", "完全な日本語タイトル")},
 	}}
 	s := &Scraper{httpClient: client, cfg: &Config{}}
@@ -121,10 +127,13 @@ func TestResolveTitleViaWebRetriesOnlyGoogleQueryVariants(t *testing.T) {
 	got := s.resolveTitleViaWeb(context.Background(), ScrapeCmd{MovieID: "完全な日本語タイトル"})
 
 	require.Equal(t, "SSIS-999", got.MovieID)
-	require.Equal(t, 2, client.calls)
-	require.Equal(t, []string{"www.google.com", "www.google.com"}, client.hosts)
+	require.Equal(t, 4, client.calls)
+	require.Equal(t, []string{"www.google.com", "html.duckduckgo.com", "duckduckgo.com", "www.google.com"}, client.hosts)
+	require.Equal(t, []string{"/search", "/html/", "/html/", "/search"}, client.paths)
 	require.Equal(t, "完全な日本語タイトル", client.queries[0])
-	require.Equal(t, "完全な日本語タイトル 品番", client.queries[1])
+	require.Equal(t, "完全な日本語タイトル", client.queries[1])
+	require.Equal(t, "完全な日本語タイトル", client.queries[2])
+	require.Equal(t, "完全な日本語タイトル 品番", client.queries[3])
 }
 
 func TestResolveTitleViaWebSkipsNormalCatalogID(t *testing.T) {
