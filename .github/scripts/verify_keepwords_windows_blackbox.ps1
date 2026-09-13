@@ -81,10 +81,12 @@ function Assert-WebLookupEvidence {
     $lines = $Combined -split "`r?`n"
     $cleanupLine = ($lines | Where-Object { $_ -match 'web-title cleanup ' } | Select-Object -Last 1)
     $lookupLine = ($lines | Where-Object { $_ -match 'web-title lookup input=' } | Select-Object -Last 1)
+    $searchLine = ($lines | Where-Object { $_ -match 'web search provider=(google|duckduckgo).*results=([1-9][0-9]*)' } | Select-Object -Last 1)
     $resolvedLine = ($lines | Where-Object { $_ -match 'title web lookup resolved .* -> SSIS-001' } | Select-Object -Last 1)
 
     "cleanup_line=$cleanupLine" | Out-File $ResultPath -Encoding utf8 -Append
     "lookup_line=$lookupLine" | Out-File $ResultPath -Encoding utf8 -Append
+    "search_line=$searchLine" | Out-File $ResultPath -Encoding utf8 -Append
     "resolved_line=$resolvedLine" | Out-File $ResultPath -Encoding utf8 -Append
 
     if ([string]::IsNullOrWhiteSpace($cleanupLine)) {
@@ -92,6 +94,9 @@ function Assert-WebLookupEvidence {
     }
     if ([string]::IsNullOrWhiteSpace($lookupLine)) {
         throw "$GateName did not emit web-title lookup evidence"
+    }
+    if ([string]::IsNullOrWhiteSpace($searchLine)) {
+        throw "$GateName did not prove that the built EXE received at least one organic web-search result"
     }
     if ([string]::IsNullOrWhiteSpace($resolvedLine)) {
         throw "$GateName did not resolve the title to $expectedID"
@@ -101,26 +106,34 @@ function Assert-WebLookupEvidence {
         if ($lookupLine.IndexOf($unwanted, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
             throw "$GateName leaked KEEPWORD '$unwanted' into cleaned web lookup: $lookupLine"
         }
+        if ($searchLine.IndexOf($unwanted, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+            throw "$GateName leaked KEEPWORD '$unwanted' into actual web-search evidence: $searchLine"
+        }
     }
 
     if ($lookupLine.IndexOf($titleBase, [System.StringComparison]::Ordinal) -lt 0) {
         throw "$GateName lost the real title before web lookup: $lookupLine"
     }
+    if ($searchLine.IndexOf($titleBase, [System.StringComparison]::Ordinal) -lt 0) {
+        throw "$GateName search result evidence does not contain the real title query: $searchLine"
+    }
     if ($Combined -match 'No results from any scraper') {
         throw "$GateName reproduced the original 'No results from any scraper' failure"
     }
+
+    "live_search_result_evidence=PASS" | Out-File $ResultPath -Encoding utf8 -Append
 }
 
 $requirementsPath = Join-Path $evidence "blackbox-requirements.txt"
 @(
-    "requirements_version=2",
+    "requirements_version=3",
     "exact_exe=$exe",
     "expected_catalog_id=$expectedID",
     "source_title=$titleBase",
     "filename_keepwords=$keepwordSuffix",
-    "gate_a=exact built EXE CLI title -> KEEPWORDS strip -> live web -> r18dev -> success",
-    "gate_b=exact built EXE web server -> auth -> batch file path -> worker -> KEEPWORDS strip -> live web -> r18dev -> completed job",
-    "distribution_rule=both gate_a and gate_b must PASS"
+    "gate_a=exact built EXE CLI title -> KEEPWORDS strip -> live web organic results > 0 -> r18dev -> success",
+    "gate_b=exact built EXE web server -> auth -> batch file path -> worker -> KEEPWORDS strip -> live web organic results > 0 -> r18dev -> completed job",
+    "distribution_rule=both gate_a and gate_b must prove live search results and PASS"
 ) | Out-File $requirementsPath -Encoding utf8
 
 # -----------------------------------------------------------------------------
@@ -302,6 +315,7 @@ try {
     "blackbox_verification=PASS",
     "gate_a=PASS",
     "gate_b=PASS",
+    "live_search_result_evidence=PASS",
     "expected_catalog_id=$expectedID",
     "tested_exe_sha256=$((Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant())"
 ) | Out-File (Join-Path $evidence "blackbox-summary.txt") -Encoding utf8
