@@ -13,10 +13,10 @@ import (
 )
 
 // fetchGeneralTitleWebSearch keeps Google as the preferred provider but does
-// not make title identification depend on Google's anti-bot interstitials.
-// DuckDuckGo's HTML endpoints are used as a network-search fallback. Both
-// paths return ordinary result cards which are evaluated by the same trusted
-// catalog-source and corroboration rules as before.
+// not make title identification depend on one public search engine. DuckDuckGo
+// and Bing are independent network-search fallbacks. Every provider must return
+// ordinary organic result cards; the caller applies the same catalog evidence
+// rules regardless of which provider answered.
 func (s *Scraper) fetchGeneralTitleWebSearch(ctx context.Context, query string) ([]titleWebSearchResult, string, error) {
 	googleResults, googleErr := s.fetchTitleWebSearch(ctx, "google", query)
 	if googleErr == nil && len(googleResults) > 0 {
@@ -31,13 +31,22 @@ func (s *Scraper) fetchGeneralTitleWebSearch(ctx context.Context, query string) 
 		return ddgResults, "duckduckgo", nil
 	}
 
+	bingResults, bingErr := s.fetchBingTitleSearch(ctx, query)
+	if bingErr == nil && len(bingResults) > 0 {
+		logging.Infof("[scrape] Google/DuckDuckGo unavailable for query=%q; Bing fallback returned %d results", truncateRunes(query, 120), len(bingResults))
+		return bingResults, "bing", nil
+	}
+
 	if googleErr == nil {
 		googleErr = fmt.Errorf("Google returned no usable results")
 	}
 	if ddgErr == nil {
 		ddgErr = fmt.Errorf("DuckDuckGo returned no usable results")
 	}
-	return nil, "", fmt.Errorf("general web search failed: Google: %v; DuckDuckGo: %v", googleErr, ddgErr)
+	if bingErr == nil {
+		bingErr = fmt.Errorf("Bing returned no usable results")
+	}
+	return nil, "", fmt.Errorf("general web search failed: Google: %v; DuckDuckGo: %v; Bing: %v", googleErr, ddgErr, bingErr)
 }
 
 func (s *Scraper) fetchDuckDuckGoTitleSearch(ctx context.Context, query string) ([]titleWebSearchResult, error) {
@@ -67,13 +76,7 @@ func (s *Scraper) fetchDuckDuckGoTitleSearch(ctx context.Context, query string) 
 			lastErr = err
 			continue
 		}
-		ua := "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-		if s.cfg != nil && strings.TrimSpace(s.cfg.UserAgent) != "" {
-			ua = s.cfg.UserAgent
-		}
-		req.Header.Set("User-Agent", ua)
-		req.Header.Set("Accept", "text/html,application/xhtml+xml")
-		req.Header.Set("Accept-Language", "ja-JP,ja;q=0.9,en-US;q=0.7,en;q=0.5")
+		setTitleSearchHeaders(req, s)
 
 		resp, err := s.httpClient.Do(req)
 		if err != nil {
@@ -107,6 +110,64 @@ func (s *Scraper) fetchDuckDuckGoTitleSearch(ctx context.Context, query string) 
 		lastErr = fmt.Errorf("DuckDuckGo search failed")
 	}
 	return nil, lastErr
+}
+
+func (s *Scraper) fetchBingTitleSearch(ctx context.Context, query string) ([]titleWebSearchResult, error) {
+	if s == nil || s.httpClient == nil {
+		return nil, fmt.Errorf("Bing search has no HTTP client")
+	}
+
+	u, err := url.Parse("https://www.bing.com/search")
+	if err != nil {
+		return nil, err
+	}
+	values := u.Query()
+	values.Set("q", query)
+	values.Set("count", "10")
+	values.Set("setlang", "ja-jp")
+	values.Set("cc", "jp")
+	values.Set("safesearch", "off")
+	u.RawQuery = values.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	setTitleSearchHeaders(req, s)
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("Bing request failed: %w", err)
+	}
+	if resp == nil {
+		return nil, fmt.Errorf("Bing returned nil response")
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("Bing returned HTTP %d", resp.StatusCode)
+	}
+	doc, err := goquery.NewDocumentFromReader(io.LimitReader(resp.Body, maxWebSearchBody))
+	if err != nil {
+		return nil, fmt.Errorf("parse Bing search page: %w", err)
+	}
+	results := parseBingResults(doc)
+	if len(results) == 0 {
+		return nil, fmt.Errorf("Bing returned no parseable organic results")
+	}
+	return results, nil
+}
+
+func setTitleSearchHeaders(req *http.Request, s *Scraper) {
+	if req == nil {
+		return
+	}
+	ua := "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+	if s != nil && s.cfg != nil && strings.TrimSpace(s.cfg.UserAgent) != "" {
+		ua = s.cfg.UserAgent
+	}
+	req.Header.Set("User-Agent", ua)
+	req.Header.Set("Accept", "text/html,application/xhtml+xml")
+	req.Header.Set("Accept-Language", "ja-JP,ja;q=0.9,en-US;q=0.7,en;q=0.5")
 }
 
 func parseDuckDuckGoResults(doc *goquery.Document) []titleWebSearchResult {
@@ -147,6 +208,50 @@ func parseDuckDuckGoResults(doc *goquery.Document) []titleWebSearchResult {
 		doc.Find("a.result__a, a.result-link").EachWithBreak(func(_ int, link *goquery.Selection) bool {
 			href, _ := link.Attr("href")
 			appendResult(link.Text(), link.Parent().Text(), href)
+			return len(results) < 10
+		})
+	}
+	return results
+}
+
+func parseBingResults(doc *goquery.Document) []titleWebSearchResult {
+	if doc == nil {
+		return nil
+	}
+	results := make([]titleWebSearchResult, 0, 10)
+	seen := make(map[string]struct{})
+	appendResult := func(title, snippet, href string) {
+		title = strings.TrimSpace(spaceRE.ReplaceAllString(title, " "))
+		snippet = strings.TrimSpace(spaceRE.ReplaceAllString(snippet, " "))
+		href = strings.TrimSpace(href)
+		if title == "" || href == "" {
+			return
+		}
+		key := title + "\x00" + href
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		results = append(results, titleWebSearchResult{Title: title, Snippet: snippet, URL: href})
+	}
+
+	doc.Find("#b_results li.b_algo").EachWithBreak(func(_ int, sel *goquery.Selection) bool {
+		link := sel.Find("h2 a").First()
+		if link.Length() > 0 {
+			href, _ := link.Attr("href")
+			snippet := sel.Find(".b_caption p").First().Text()
+			if strings.TrimSpace(snippet) == "" {
+				snippet = sel.Find(".b_snippet").First().Text()
+			}
+			appendResult(link.Text(), snippet, href)
+		}
+		return len(results) < 10
+	})
+
+	if len(results) == 0 {
+		doc.Find("#b_results h2 a").EachWithBreak(func(_ int, link *goquery.Selection) bool {
+			href, _ := link.Attr("href")
+			appendResult(link.Text(), link.Parent().Parent().Text(), href)
 			return len(results) < 10
 		})
 	}

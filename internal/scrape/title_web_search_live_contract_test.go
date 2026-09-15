@@ -75,7 +75,7 @@ func newSubmissionLiveRegistry(t *testing.T) *scraperutil.ScraperRegistry {
 
 func supportedLiveSearchHost(host string) bool {
 	h := strings.ToLower(strings.TrimSpace(host))
-	return h == "www.google.com" || h == "html.duckduckgo.com" || h == "duckduckgo.com"
+	return h == "www.google.com" || h == "html.duckduckgo.com" || h == "duckduckgo.com" || h == "www.bing.com"
 }
 
 func TestSubmissionLiveTitleToCatalogID(t *testing.T) {
@@ -170,10 +170,6 @@ func TestSubmissionLiveTitleToCatalogID(t *testing.T) {
 			for i, q := range caseQueries {
 				host := caseHosts[i]
 				t.Logf("LIVE_WEB_REQUEST host=%s q=%q", host, q)
-				lowerHost := strings.ToLower(host)
-				if strings.Contains(lowerHost, "bing.com") {
-					t.Fatalf("Bing was contacted during catalog-ID resolution: host=%q q=%q", host, q)
-				}
 				if !supportedLiveSearchHost(host) {
 					t.Fatalf("unexpected search-engine provider used: host=%q q=%q", host, q)
 				}

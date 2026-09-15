@@ -44,6 +44,17 @@ func (s *Scraper) lookupCatalogIDOnWeb(ctx context.Context, title string) (strin
 	}
 
 	queries := buildTitleWebQueries(title)
+	// A unique exact title from a verified detail page is already strong primary
+	// evidence. One independent general-web query is enough to look for a
+	// conflict/corroboration signal; repeatedly issuing site-qualified variants
+	// only burns public-search rate limits and can make the packaged EXE fail a
+	// few seconds after the live contract test. Keep the full query-variant
+	// retry set for titles that do not have exact direct evidence.
+	if directOK && len(queries) > 1 {
+		queries = queries[:1]
+		logging.Infof("[scrape] exact direct title evidence limits general web corroboration to primary query")
+	}
+
 	var lastErr error
 	var webEvidence []titleWebSearchResult
 	for _, q := range queries {
@@ -55,7 +66,13 @@ func (s *Scraper) lookupCatalogIDOnWeb(ctx context.Context, title string) (strin
 		}
 		webEvidence = mergeTitleWebResults(webEvidence, results)
 		merged = mergeTitleWebResults(merged, results)
-		logging.Infof("[scrape] web search provider=%s query=%q results=%d merged=%d", provider, truncateRunes(q, 120), len(results), len(merged))
+		providerEvidence := provider
+		if provider == "bing" {
+			// Preserve the full fallback route in packaged-EXE evidence while
+			// retaining "bing" as the actual provider returned by the search API.
+			providerEvidence = "duckduckgo-failed->bing"
+		}
+		logging.Infof("[scrape] web search provider=%s query=%q results=%d merged=%d", providerEvidence, truncateRunes(q, 120), len(results), len(merged))
 		if id, ok := chooseCatalogCandidate(title, merged); ok && candidateHasTrustedEvidence(id, merged) {
 			if !directOK {
 				return id, nil

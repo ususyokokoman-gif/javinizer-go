@@ -52,6 +52,10 @@ func googleResultHTML(id, title string) string {
 	return `<html><body><div class="MjjYud"><div class="tF2Cxc"><a href="https://www.dmm.co.jp/example/` + id + `"><h3>` + id + ` ` + title + `</h3></a><div class="VwiC3b">` + title + ` 品番 ` + id + `</div></div></div></body></html>`
 }
 
+func bingResultHTML(id, title string) string {
+	return `<html><body><ol id="b_results"><li class="b_algo"><h2><a href="https://www.dmm.co.jp/example/` + id + `">` + id + ` ` + title + `</a></h2><div class="b_caption"><p>` + title + ` 品番 ` + id + `</p></div></li></ol></body></html>`
+}
+
 func TestNormalizeTitleForWebSearchRemovesFilenameNoise(t *testing.T) {
 	got := normalizeTitleForWebSearch("【中文字幕】美しい人妻が夫に内緒で濃密SEX_4K_UNCENSORED.mp4")
 	require.Equal(t, "美しい人妻が夫に内緒で濃密SEX", got)
@@ -111,13 +115,33 @@ func TestGoogleIsTheOnlySupportedWebProvider(t *testing.T) {
 	require.Zero(t, client.calls)
 }
 
-func TestResolveTitleViaWebRetriesGoogleQueryVariantsAfterFallbackMiss(t *testing.T) {
-	// The first Google query fails with 503. The general-search layer then tries
-	// both DuckDuckGo HTML endpoints, which also return no organic result. The
-	// resolver must continue to the next Google query variant rather than stop
-	// or launch a real browser from this deterministic regression test.
+func TestGeneralSearchFallsBackToBingAfterGoogleAndDuckDuckGoMiss(t *testing.T) {
 	client := &titleWebFakeHTTPClient{responses: []titleWebFakeResponse{
 		{status: http.StatusServiceUnavailable, body: ""},
+		{status: http.StatusOK, body: ""},
+		{status: http.StatusOK, body: ""},
+		{status: http.StatusOK, body: bingResultHTML("SSIS-999", "完全な日本語タイトル")},
+	}}
+	s := &Scraper{httpClient: client, cfg: &Config{}}
+
+	results, provider, err := s.fetchGeneralTitleWebSearch(context.Background(), "完全な日本語タイトル")
+
+	require.NoError(t, err)
+	require.Equal(t, "bing", provider)
+	require.Len(t, results, 1)
+	require.Contains(t, results[0].Title, "SSIS-999")
+	require.Equal(t, []string{"www.google.com", "html.duckduckgo.com", "duckduckgo.com", "www.bing.com"}, client.hosts)
+	require.Equal(t, []string{"/search", "/html/", "/html/", "/search"}, client.paths)
+}
+
+func TestResolveTitleViaWebRetriesGoogleQueryVariantsAfterFallbackMiss(t *testing.T) {
+	// The first Google query fails with 503. Both DuckDuckGo HTML endpoints and
+	// Bing also return no organic result. The resolver must continue to the next
+	// Google query variant rather than stop or launch a real browser from this
+	// deterministic regression test.
+	client := &titleWebFakeHTTPClient{responses: []titleWebFakeResponse{
+		{status: http.StatusServiceUnavailable, body: ""},
+		{status: http.StatusOK, body: ""},
 		{status: http.StatusOK, body: ""},
 		{status: http.StatusOK, body: ""},
 		{status: http.StatusOK, body: googleResultHTML("SSIS-999", "完全な日本語タイトル")},
@@ -127,13 +151,14 @@ func TestResolveTitleViaWebRetriesGoogleQueryVariantsAfterFallbackMiss(t *testin
 	got := s.resolveTitleViaWeb(context.Background(), ScrapeCmd{MovieID: "完全な日本語タイトル"})
 
 	require.Equal(t, "SSIS-999", got.MovieID)
-	require.Equal(t, 4, client.calls)
-	require.Equal(t, []string{"www.google.com", "html.duckduckgo.com", "duckduckgo.com", "www.google.com"}, client.hosts)
-	require.Equal(t, []string{"/search", "/html/", "/html/", "/search"}, client.paths)
+	require.Equal(t, 5, client.calls)
+	require.Equal(t, []string{"www.google.com", "html.duckduckgo.com", "duckduckgo.com", "www.bing.com", "www.google.com"}, client.hosts)
+	require.Equal(t, []string{"/search", "/html/", "/html/", "/search", "/search"}, client.paths)
 	require.Equal(t, "完全な日本語タイトル", client.queries[0])
 	require.Equal(t, "完全な日本語タイトル", client.queries[1])
 	require.Equal(t, "完全な日本語タイトル", client.queries[2])
-	require.Equal(t, "完全な日本語タイトル 品番", client.queries[3])
+	require.Equal(t, "完全な日本語タイトル", client.queries[3])
+	require.Equal(t, "完全な日本語タイトル 品番", client.queries[4])
 }
 
 func TestResolveTitleViaWebSkipsNormalCatalogID(t *testing.T) {
