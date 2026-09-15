@@ -70,7 +70,7 @@ func (s *Scraper) lookupCatalogIDOnWeb(ctx context.Context, title string) (strin
 		if provider == "bing" {
 			// Preserve the full fallback route in packaged-EXE evidence while
 			// retaining "bing" as the actual provider returned by the search API.
-			providerEvidence = "duckduckgo-failed->bing"
+			providerEvidence = "duckduckgo-miss->bing"
 		}
 		logging.Infof("[scrape] web search provider=%s query=%q results=%d merged=%d", providerEvidence, truncateRunes(q, 120), len(results), len(merged))
 		if id, ok := chooseCatalogCandidate(title, merged); ok && candidateHasTrustedEvidence(id, merged) {
