@@ -9,7 +9,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
-)
+
+	"github.com/PuerkitoBio/goquery")
 
 type titleLookupHTTPClientFunc func(*http.Request) (*http.Response, error)
 
@@ -110,5 +111,29 @@ func TestNormalizeBingResultURLDecodesTrackedTarget(t *testing.T) {
 	ids := extractTrustedURLCatalogCandidates(got)
 	if len(ids) != 1 || ids[0] != "IPZ-508" {
 		t.Fatalf("decoded Bing result catalog IDs = %#v, want [IPZ-508]", ids)
+	}
+}
+
+
+func TestParseBingResultsNormalizesTrackedTarget(t *testing.T) {
+	html := `<html><body><ol id="b_results"><li class="b_algo"><h2><a href="https://www.bing.com/ck/a?!&&p=abc&u=a1aHR0cHM6Ly93d3cuZG1tLmNvLmpwL2RpZ2l0YWwvdmlkZW9hLy0vZGV0YWlsLz0vY2lkPWlweDAwMDcyLw&ntb=1">狙われた通学路 共謀痴漢電車 桃乃木かな IPX-072</a></h2><div class="b_caption"><p>品番 IPX-072</p></div></li></ol></body></html>`
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
+	if err != nil {
+		t.Fatal(err)
+	}
+	results := parseBingResults(doc)
+	if len(results) != 1 {
+		t.Fatalf("parseBingResults() returned %d results, want 1", len(results))
+	}
+	wantURL := "https://www.dmm.co.jp/digital/videoa/-/detail/=/cid=ipx00072/"
+	if results[0].URL != wantURL {
+		t.Fatalf("Bing parsed URL = %q, want %q", results[0].URL, wantURL)
+	}
+	if source := trustedCatalogSource(results[0].URL); source != "dmm" {
+		t.Fatalf("Bing parsed trusted source = %q, want dmm", source)
+	}
+	ids := extractTrustedURLCatalogCandidates(results[0].URL)
+	if len(ids) != 1 || ids[0] != "IPX-072" {
+		t.Fatalf("Bing parsed catalog IDs = %#v, want [IPX-072]", ids)
 	}
 }
