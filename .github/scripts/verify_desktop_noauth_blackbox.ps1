@@ -137,8 +137,14 @@ try {
     $terminal = $false
     for ($i = 0; $i -lt 180; $i++) {
         Start-Sleep -Seconds 1
+        if (($i % 5) -eq 0) {
+            Write-Host "GATE_C_POLL attempt=$($i + 1) uri=$jobUri"
+        }
         # Polling is also deliberately unauthenticated.
-        $job = Invoke-RestMethod -Method Get -Uri $jobUri -TimeoutSec 15
+        $job = Invoke-RestMethod -Method Get -Uri $jobUri -TimeoutSec 5
+        if (($i % 5) -eq 0 -and $null -ne $job) {
+            Write-Host "GATE_C_STATUS attempt=$($i + 1) status=$($job.status) completed=$($job.completed) failed=$($job.failed)"
+        }
         if ($job.status -in @("completed", "failed", "cancelled")) {
             $terminal = $true
             break
