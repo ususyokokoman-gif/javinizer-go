@@ -2,6 +2,7 @@ package scrape
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"net/http"
@@ -172,7 +173,7 @@ func parseYahooJapanResults(doc *goquery.Document) []titleWebSearchResult {
 	appendResult := func(title, snippet, href string) {
 		title = strings.TrimSpace(spaceRE.ReplaceAllString(title, " "))
 		snippet = strings.TrimSpace(spaceRE.ReplaceAllString(snippet, " "))
-		href = strings.TrimSpace(href)
+		href = normalizeBingResultURL(strings.TrimSpace(href))
 		if title == "" || href == "" {
 			return
 		}
@@ -379,6 +380,51 @@ func normalizeDuckDuckGoResultURL(raw string) string {
 	if host == "duckduckgo.com" || strings.HasSuffix(host, ".duckduckgo.com") {
 		if target := strings.TrimSpace(parsed.Query().Get("uddg")); target != "" {
 			return target
+		}
+	}
+	return candidate
+}
+
+
+func normalizeBingResultURL(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	candidate := raw
+	if strings.HasPrefix(candidate, "//") {
+		candidate = "https:" + candidate
+	}
+	parsed, err := url.Parse(candidate)
+	if err != nil {
+		return raw
+	}
+	host := strings.ToLower(strings.TrimSuffix(parsed.Hostname(), "."))
+	if host != "bing.com" && !strings.HasSuffix(host, ".bing.com") {
+		return candidate
+	}
+
+	for _, key := range []string{"u", "url", "r"} {
+		target := strings.TrimSpace(parsed.Query().Get(key))
+		if target == "" {
+			continue
+		}
+		if strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://") {
+			return target
+		}
+		if strings.HasPrefix(target, "a1") {
+			encoded := strings.TrimPrefix(target, "a1")
+			if decoded, decodeErr := base64.RawURLEncoding.DecodeString(encoded); decodeErr == nil {
+				value := strings.TrimSpace(string(decoded))
+				if strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://") {
+					return value
+				}
+			}
+			if decoded, decodeErr := base64.RawStdEncoding.DecodeString(encoded); decodeErr == nil {
+				value := strings.TrimSpace(string(decoded))
+				if strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://") {
+					return value
+				}
+			}
 		}
 	}
 	return candidate
