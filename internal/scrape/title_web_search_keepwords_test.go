@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/PuerkitoBio/goquery"
 	"github.com/stretchr/testify/require"
 )
 
@@ -50,6 +51,10 @@ func (f *titleWebFakeHTTPClient) Do(req *http.Request) (*http.Response, error) {
 
 func googleResultHTML(id, title string) string {
 	return `<html><body><div class="MjjYud"><div class="tF2Cxc"><a href="https://www.dmm.co.jp/example/` + id + `"><h3>` + id + ` ` + title + `</h3></a><div class="VwiC3b">` + title + ` 品番 ` + id + `</div></div></div></body></html>`
+}
+
+func yahooJapanResultHTML(id, title string) string {
+	return `<html><body><div class="sw-CardBase"><div class="sw-Card Algo"><section><div class="sw-Card__section"><div class="sw-Card__title"><a class="sw-Card__titleInner" href="https://www.dmm.co.jp/digital/videoa/-/detail/=/cid=ssis00001/"><h3 class="sw-Card__titleMain"><span>` + id + ` ` + title + `</span></h3></a><p class="sw-Card__summary">` + title + ` メーカー品番, ` + id + `.</p></div></div></section></div></div></body></html>`
 }
 
 func bingResultHTML(id, title string) string {
@@ -115,9 +120,29 @@ func TestGoogleIsTheOnlySupportedWebProvider(t *testing.T) {
 	require.Zero(t, client.calls)
 }
 
-func TestGeneralSearchFallsBackToBingAfterGoogleAndDuckDuckGoMiss(t *testing.T) {
+func TestGeneralSearchFallsBackToYahooJapanAfterGoogleAndDuckDuckGoMiss(t *testing.T) {
 	client := &titleWebFakeHTTPClient{responses: []titleWebFakeResponse{
 		{status: http.StatusServiceUnavailable, body: ""},
+		{status: http.StatusOK, body: ""},
+		{status: http.StatusOK, body: ""},
+		{status: http.StatusOK, body: yahooJapanResultHTML("SSIS-999", "完全な日本語タイトル")},
+	}}
+	s := &Scraper{httpClient: client, cfg: &Config{}}
+
+	results, provider, err := s.fetchGeneralTitleWebSearch(context.Background(), "完全な日本語タイトル")
+
+	require.NoError(t, err)
+	require.Equal(t, "yahoojp", provider)
+	require.Len(t, results, 1)
+	require.Contains(t, results[0].Title, "SSIS-999")
+	require.Equal(t, []string{"www.google.com", "html.duckduckgo.com", "duckduckgo.com", "search.yahoo.co.jp"}, client.hosts)
+	require.Equal(t, []string{"/search", "/html/", "/html/", "/search"}, client.paths)
+}
+
+func TestGeneralSearchFallsBackToBingAfterYahooJapanMiss(t *testing.T) {
+	client := &titleWebFakeHTTPClient{responses: []titleWebFakeResponse{
+		{status: http.StatusServiceUnavailable, body: ""},
+		{status: http.StatusOK, body: ""},
 		{status: http.StatusOK, body: ""},
 		{status: http.StatusOK, body: ""},
 		{status: http.StatusOK, body: bingResultHTML("SSIS-999", "完全な日本語タイトル")},
@@ -130,8 +155,19 @@ func TestGeneralSearchFallsBackToBingAfterGoogleAndDuckDuckGoMiss(t *testing.T) 
 	require.Equal(t, "bing", provider)
 	require.Len(t, results, 1)
 	require.Contains(t, results[0].Title, "SSIS-999")
-	require.Equal(t, []string{"www.google.com", "html.duckduckgo.com", "duckduckgo.com", "www.bing.com"}, client.hosts)
-	require.Equal(t, []string{"/search", "/html/", "/html/", "/search"}, client.paths)
+	require.Equal(t, []string{"www.google.com", "html.duckduckgo.com", "duckduckgo.com", "search.yahoo.co.jp", "www.bing.com"}, client.hosts)
+	require.Equal(t, []string{"/search", "/html/", "/html/", "/search", "/search"}, client.paths)
+}
+
+func TestParseYahooJapanResultsExtractsOrganicCard(t *testing.T) {
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(yahooJapanResultHTML("MIDE-007", "今日、あなたの上司に犯されました。 大橋未久")))
+	require.NoError(t, err)
+
+	results := parseYahooJapanResults(doc)
+	require.Len(t, results, 1)
+	require.Contains(t, results[0].Title, "MIDE-007")
+	require.Contains(t, results[0].Snippet, "メーカー品番")
+	require.Contains(t, results[0].URL, "dmm.co.jp")
 }
 
 func TestResolveTitleViaWebRetriesGoogleQueryVariantsAfterFallbackMiss(t *testing.T) {
@@ -144,6 +180,7 @@ func TestResolveTitleViaWebRetriesGoogleQueryVariantsAfterFallbackMiss(t *testin
 		{status: http.StatusOK, body: ""},
 		{status: http.StatusOK, body: ""},
 		{status: http.StatusOK, body: ""},
+		{status: http.StatusOK, body: ""},
 		{status: http.StatusOK, body: googleResultHTML("SSIS-999", "完全な日本語タイトル")},
 	}}
 	s := &Scraper{httpClient: client, cfg: &Config{}}
@@ -151,14 +188,15 @@ func TestResolveTitleViaWebRetriesGoogleQueryVariantsAfterFallbackMiss(t *testin
 	got := s.resolveTitleViaWeb(context.Background(), ScrapeCmd{MovieID: "完全な日本語タイトル"})
 
 	require.Equal(t, "SSIS-999", got.MovieID)
-	require.Equal(t, 5, client.calls)
-	require.Equal(t, []string{"www.google.com", "html.duckduckgo.com", "duckduckgo.com", "www.bing.com", "www.google.com"}, client.hosts)
-	require.Equal(t, []string{"/search", "/html/", "/html/", "/search", "/search"}, client.paths)
+	require.Equal(t, 6, client.calls)
+	require.Equal(t, []string{"www.google.com", "html.duckduckgo.com", "duckduckgo.com", "search.yahoo.co.jp", "www.bing.com", "www.google.com"}, client.hosts)
+	require.Equal(t, []string{"/search", "/html/", "/html/", "/search", "/search", "/search"}, client.paths)
 	require.Equal(t, "完全な日本語タイトル", client.queries[0])
 	require.Equal(t, "完全な日本語タイトル", client.queries[1])
 	require.Equal(t, "完全な日本語タイトル", client.queries[2])
-	require.Equal(t, "完全な日本語タイトル", client.queries[3])
-	require.Equal(t, "完全な日本語タイトル 品番", client.queries[4])
+	require.Equal(t, "", client.queries[3]) // Yahoo Japan uses p= rather than q=.
+	require.Equal(t, "完全な日本語タイトル", client.queries[4])
+	require.Equal(t, "完全な日本語タイトル 品番", client.queries[5])
 }
 
 func TestResolveTitleViaWebSkipsNormalCatalogID(t *testing.T) {
