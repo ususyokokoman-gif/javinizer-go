@@ -10,7 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/PuerkitoBio/goquery")
+	"github.com/PuerkitoBio/goquery"
+)
 
 type titleLookupHTTPClientFunc func(*http.Request) (*http.Response, error)
 
