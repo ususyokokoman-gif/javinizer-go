@@ -95,3 +95,20 @@ func TestFetchTitleWebSearchFallsBackToBrowserWhenHTTP200HasNoOrganicResults(t *
 		t.Fatalf("browser fallback results = %#v", results)
 	}
 }
+
+
+func TestNormalizeBingResultURLDecodesTrackedTarget(t *testing.T) {
+	raw := "https://www.bing.com/ck/a?!&&p=abc&u=a1aHR0cHM6Ly93d3cuZG1tLmNvLmpwL2RpZ2l0YWwvdmlkZW9hLy0vZGV0YWlsLz0vY2lkPWlwejAwNTA4Lw&ntb=1"
+	want := "https://www.dmm.co.jp/digital/videoa/-/detail/=/cid=ipz00508/"
+	got := normalizeBingResultURL(raw)
+	if got != want {
+		t.Fatalf("normalizeBingResultURL() = %q, want %q", got, want)
+	}
+	if source := trustedCatalogSource(got); source != "dmm" {
+		t.Fatalf("decoded Bing result trusted source = %q, want dmm", source)
+	}
+	ids := extractTrustedURLCatalogCandidates(got)
+	if len(ids) != 1 || ids[0] != "IPZ-508" {
+		t.Fatalf("decoded Bing result catalog IDs = %#v, want [IPZ-508]", ids)
+	}
+}
