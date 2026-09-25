@@ -81,7 +81,7 @@ function Assert-WebLookupEvidence {
     $lines = $Combined -split "`r?`n"
     $cleanupLine = ($lines | Where-Object { $_ -match 'web-title cleanup ' } | Select-Object -Last 1)
     $lookupLine = ($lines | Where-Object { $_ -match 'web-title lookup input=' } | Select-Object -Last 1)
-    $searchLine = ($lines | Where-Object { $_ -match 'web search provider=(google|duckduckgo).*results=([1-9][0-9]*)' } | Select-Object -Last 1)
+    $searchLine = ($lines | Where-Object { $_ -match 'web search provider=(google|duckduckgo|yahoojp).*results=([1-9][0-9]*)' } | Select-Object -Last 1)
     $resolvedLine = ($lines | Where-Object { $_ -match 'title web lookup resolved .* -> SSIS-001' } | Select-Object -Last 1)
 
     "cleanup_line=$cleanupLine" | Out-File $ResultPath -Encoding utf8 -Append
@@ -126,7 +126,7 @@ function Assert-WebLookupEvidence {
 
 $requirementsPath = Join-Path $evidence "blackbox-requirements.txt"
 @(
-    "requirements_version=3",
+    "requirements_version=4",
     "exact_exe=$exe",
     "expected_catalog_id=$expectedID",
     "source_title=$titleBase",
