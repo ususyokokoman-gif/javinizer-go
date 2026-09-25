@@ -29,7 +29,11 @@ func (r *liveWebRecorder) Do(req *http.Request) (*http.Response, error) {
 	r.mu.Lock()
 	if req != nil && req.URL != nil {
 		r.hosts = append(r.hosts, req.URL.Host)
-		r.queries = append(r.queries, req.URL.Query().Get("q"))
+		q := req.URL.Query().Get("q")
+		if q == "" {
+			q = req.URL.Query().Get("p")
+		}
+		r.queries = append(r.queries, q)
 	}
 	r.mu.Unlock()
 	return r.inner.Do(req)
@@ -75,7 +79,7 @@ func newSubmissionLiveRegistry(t *testing.T) *scraperutil.ScraperRegistry {
 
 func supportedLiveSearchHost(host string) bool {
 	h := strings.ToLower(strings.TrimSpace(host))
-	return h == "www.google.com" || h == "html.duckduckgo.com" || h == "duckduckgo.com" || h == "www.bing.com"
+	return h == "www.google.com" || h == "html.duckduckgo.com" || h == "duckduckgo.com" || h == "search.yahoo.co.jp" || h == "www.bing.com"
 }
 
 func TestSubmissionLiveTitleToCatalogID(t *testing.T) {
