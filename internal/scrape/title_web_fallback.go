@@ -14,8 +14,8 @@ import (
 
 // fetchGeneralTitleWebSearch keeps Google as the preferred provider but does
 // not make title identification depend on one public search engine. DuckDuckGo
-// and Bing are independent network-search fallbacks. Every provider must return
-// ordinary organic result cards; the caller applies the same catalog evidence
+// Yahoo Japan and Bing are independent network-search fallbacks. Every provider
+// must return ordinary organic result cards; the caller applies the same catalog evidence
 // rules regardless of which provider answered.
 func (s *Scraper) fetchGeneralTitleWebSearch(ctx context.Context, query string) ([]titleWebSearchResult, string, error) {
 	googleResults, googleErr := s.fetchTitleWebSearch(ctx, "google", query)
@@ -31,9 +31,15 @@ func (s *Scraper) fetchGeneralTitleWebSearch(ctx context.Context, query string) 
 		return ddgResults, "duckduckgo", nil
 	}
 
+	yahooResults, yahooErr := s.fetchYahooJapanTitleSearch(ctx, query)
+	if yahooErr == nil && len(yahooResults) > 0 {
+		logging.Infof("[scrape] Google/DuckDuckGo unavailable for query=%q; Yahoo Japan fallback returned %d results", truncateRunes(query, 120), len(yahooResults))
+		return yahooResults, "yahoojp", nil
+	}
+
 	bingResults, bingErr := s.fetchBingTitleSearch(ctx, query)
 	if bingErr == nil && len(bingResults) > 0 {
-		logging.Infof("[scrape] Google/DuckDuckGo unavailable for query=%q; Bing fallback returned %d results", truncateRunes(query, 120), len(bingResults))
+		logging.Infof("[scrape] Google/DuckDuckGo/Yahoo Japan unavailable for query=%q; Bing fallback returned %d results", truncateRunes(query, 120), len(bingResults))
 		return bingResults, "bing", nil
 	}
 
@@ -43,10 +49,13 @@ func (s *Scraper) fetchGeneralTitleWebSearch(ctx context.Context, query string) 
 	if ddgErr == nil {
 		ddgErr = fmt.Errorf("DuckDuckGo returned no usable results")
 	}
+	if yahooErr == nil {
+		yahooErr = fmt.Errorf("Yahoo Japan returned no usable results")
+	}
 	if bingErr == nil {
 		bingErr = fmt.Errorf("Bing returned no usable results")
 	}
-	return nil, "", fmt.Errorf("general web search failed: Google: %v; DuckDuckGo: %v; Bing: %v", googleErr, ddgErr, bingErr)
+	return nil, "", fmt.Errorf("general web search failed: Google: %v; DuckDuckGo: %v; Yahoo Japan: %v; Bing: %v", googleErr, ddgErr, yahooErr, bingErr)
 }
 
 func (s *Scraper) fetchDuckDuckGoTitleSearch(ctx context.Context, query string) ([]titleWebSearchResult, error) {
@@ -110,6 +119,100 @@ func (s *Scraper) fetchDuckDuckGoTitleSearch(ctx context.Context, query string) 
 		lastErr = fmt.Errorf("DuckDuckGo search failed")
 	}
 	return nil, lastErr
+}
+
+func (s *Scraper) fetchYahooJapanTitleSearch(ctx context.Context, query string) ([]titleWebSearchResult, error) {
+	if s == nil || s.httpClient == nil {
+		return nil, fmt.Errorf("Yahoo Japan search has no HTTP client")
+	}
+
+	u, err := url.Parse("https://search.yahoo.co.jp/search")
+	if err != nil {
+		return nil, err
+	}
+	values := u.Query()
+	values.Set("p", query)
+	values.Set("ei", "UTF-8")
+	u.RawQuery = values.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	setTitleSearchHeaders(req, s)
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("Yahoo Japan request failed: %w", err)
+	}
+	if resp == nil {
+		return nil, fmt.Errorf("Yahoo Japan returned nil response")
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("Yahoo Japan returned HTTP %d", resp.StatusCode)
+	}
+	doc, err := goquery.NewDocumentFromReader(io.LimitReader(resp.Body, maxWebSearchBody))
+	if err != nil {
+		return nil, fmt.Errorf("parse Yahoo Japan search page: %w", err)
+	}
+	results := parseYahooJapanResults(doc)
+	if len(results) == 0 {
+		return nil, fmt.Errorf("Yahoo Japan returned no parseable organic results")
+	}
+	return results, nil
+}
+
+func parseYahooJapanResults(doc *goquery.Document) []titleWebSearchResult {
+	if doc == nil {
+		return nil
+	}
+	results := make([]titleWebSearchResult, 0, 10)
+	seen := make(map[string]struct{})
+	appendResult := func(title, snippet, href string) {
+		title = strings.TrimSpace(spaceRE.ReplaceAllString(title, " "))
+		snippet = strings.TrimSpace(spaceRE.ReplaceAllString(snippet, " "))
+		href = strings.TrimSpace(href)
+		if title == "" || href == "" {
+			return
+		}
+		key := title + "\x00" + href
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		results = append(results, titleWebSearchResult{Title: title, Snippet: snippet, URL: href})
+	}
+
+	doc.Find(".sw-Card.Algo, .sw-CardBase .Algo").EachWithBreak(func(_ int, sel *goquery.Selection) bool {
+		link := sel.Find("a.sw-Card__titleInner").First()
+		if link.Length() == 0 {
+			return true
+		}
+		href, _ := link.Attr("href")
+		title := sel.Find("h3.sw-Card__titleMain").First().Text()
+		if strings.TrimSpace(title) == "" {
+			title = link.Text()
+		}
+		snippet := sel.Find(".sw-Card__summary").First().Text()
+		appendResult(title, snippet, href)
+		return len(results) < 10
+	})
+
+	if len(results) == 0 {
+		doc.Find("a.sw-Card__titleInner").EachWithBreak(func(_ int, link *goquery.Selection) bool {
+			href, _ := link.Attr("href")
+			card := link.Closest(".sw-Card.Algo, .sw-CardBase")
+			title := link.Find("h3.sw-Card__titleMain").First().Text()
+			if strings.TrimSpace(title) == "" {
+				title = link.Text()
+			}
+			snippet := card.Find(".sw-Card__summary").First().Text()
+			appendResult(title, snippet, href)
+			return len(results) < 10
+		})
+	}
+	return results
 }
 
 func (s *Scraper) fetchBingTitleSearch(ctx context.Context, query string) ([]titleWebSearchResult, error) {
