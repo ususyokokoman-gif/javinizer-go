@@ -327,7 +327,7 @@ func parseBingResults(doc *goquery.Document) []titleWebSearchResult {
 	appendResult := func(title, snippet, href string) {
 		title = strings.TrimSpace(spaceRE.ReplaceAllString(title, " "))
 		snippet = strings.TrimSpace(spaceRE.ReplaceAllString(snippet, " "))
-		href = strings.TrimSpace(href)
+		href = normalizeBingResultURL(strings.TrimSpace(href))
 		if title == "" || href == "" {
 			return
 		}
