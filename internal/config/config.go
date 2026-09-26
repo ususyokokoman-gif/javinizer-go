@@ -494,10 +494,10 @@ func ValidateConfig(cfg *Config) error {
 
 	// Validate Jev catalog-ID decision gate.
 	jev := cfg.Metadata.CatalogIDValidation
-	if jev.Threshold <= 0 || jev.Threshold > 1 {
-		return fmt.Errorf("metadata.catalog_id_validation.threshold must be > 0 and <= 1")
-	}
 	if jev.Enabled {
+		if jev.Threshold <= 0 || jev.Threshold > 1 {
+			return fmt.Errorf("metadata.catalog_id_validation.threshold must be > 0 and <= 1 when enabled")
+		}
 		if strings.TrimSpace(jev.Model) == "" {
 			return fmt.Errorf("metadata.catalog_id_validation.model is required when enabled")
 		}
