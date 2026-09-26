@@ -242,18 +242,20 @@ func TestConfig_Validate(t *testing.T) {
 		{
 			name: "Jev catalog validation threshold too low",
 			modifyConfig: func(c *Config) {
+				c.Metadata.CatalogIDValidation.Enabled = true
 				c.Metadata.CatalogIDValidation.Threshold = 0
 			},
 			expectError:   true,
-			errorContains: "metadata.catalog_id_validation.threshold must be > 0 and <= 1",
+			errorContains: "metadata.catalog_id_validation.threshold must be > 0 and <= 1 when enabled",
 		},
 		{
 			name: "Jev catalog validation threshold too high",
 			modifyConfig: func(c *Config) {
+				c.Metadata.CatalogIDValidation.Enabled = true
 				c.Metadata.CatalogIDValidation.Threshold = 1.01
 			},
 			expectError:   true,
-			errorContains: "metadata.catalog_id_validation.threshold must be > 0 and <= 1",
+			errorContains: "metadata.catalog_id_validation.threshold must be > 0 and <= 1 when enabled",
 		},
 		{
 			name: "Jev catalog validation enabled valid",
