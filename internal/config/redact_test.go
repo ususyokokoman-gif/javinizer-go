@@ -48,6 +48,14 @@ func TestRedact(t *testing.T) {
 		assert.Equal(t, "compatible-secret", cfg.Metadata.Translation.OpenAICompatible.APIKey)
 	})
 
+	t.Run("redacts Jev catalog validation API key", func(t *testing.T) {
+		cfg := DefaultConfig(nil, nil)
+		cfg.Metadata.CatalogIDValidation.APIKey = "typesafe-secret"
+		redacted := cfg.Redact()
+		assert.Equal(t, models.RedactedValue, redacted.Metadata.CatalogIDValidation.APIKey)
+		assert.Equal(t, "typesafe-secret", cfg.Metadata.CatalogIDValidation.APIKey)
+	})
+
 	t.Run("redacts Database DSN", func(t *testing.T) {
 		cfg := DefaultConfig(nil, nil)
 		cfg.Database.DSN = "user:password@tcp(localhost:3306)/db"
