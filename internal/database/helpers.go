@@ -3,12 +3,10 @@ package database
 import (
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/javinizer/javinizer-go/internal/logging"
 	"github.com/javinizer/javinizer-go/internal/models"
-	"github.com/mattn/go-sqlite3"
 	"gorm.io/gorm"
 )
 
@@ -17,14 +15,6 @@ func wrapDBErr(op, entity string, err error) error {
 		return nil
 	}
 	return fmt.Errorf("%s %s: %w", op, entity, err)
-}
-
-func isLocked(err error) bool {
-	var sqliteErr *sqlite3.Error
-	if errors.As(err, &sqliteErr) {
-		return sqliteErr.Code == sqlite3.ErrBusy || sqliteErr.Code == sqlite3.ErrLocked
-	}
-	return err != nil && (strings.Contains(err.Error(), "database is locked") || strings.Contains(err.Error(), "database table is locked"))
 }
 
 const defaultLockRetries = 10
