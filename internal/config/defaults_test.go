@@ -139,6 +139,13 @@ func TestDefaultConfigMatchesExample(t *testing.T) {
 		assert.Equal(t, exampleCfg.Metadata.Translation.TargetLanguage, defaultCfg.Metadata.Translation.TargetLanguage, "metadata.translation.target_language mismatch")
 	})
 
+	t.Run("CatalogIDValidationConfig", func(t *testing.T) {
+		assert.Equal(t, exampleCfg.Metadata.CatalogIDValidation.Enabled, defaultCfg.Metadata.CatalogIDValidation.Enabled, "metadata.catalog_id_validation.enabled mismatch")
+		assert.Equal(t, exampleCfg.Metadata.CatalogIDValidation.Threshold, defaultCfg.Metadata.CatalogIDValidation.Threshold, "metadata.catalog_id_validation.threshold mismatch")
+		assert.Equal(t, exampleCfg.Metadata.CatalogIDValidation.Model, defaultCfg.Metadata.CatalogIDValidation.Model, "metadata.catalog_id_validation.model mismatch")
+		assert.Equal(t, exampleCfg.Metadata.CatalogIDValidation.Endpoint, defaultCfg.Metadata.CatalogIDValidation.Endpoint, "metadata.catalog_id_validation.endpoint mismatch")
+	})
+
 	t.Run("PerformanceConfig", func(t *testing.T) {
 		assert.Equal(t, exampleCfg.Performance.MaxWorkers, defaultCfg.Performance.MaxWorkers, "performance.max_workers mismatch")
 		assert.Equal(t, exampleCfg.Performance.WorkerTimeout, defaultCfg.Performance.WorkerTimeout, "performance.worker_timeout mismatch")
