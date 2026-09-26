@@ -240,6 +240,50 @@ func TestConfig_Validate(t *testing.T) {
 			expectError: false,
 		},
 		{
+			name: "Jev catalog validation threshold too low",
+			modifyConfig: func(c *Config) {
+				c.Metadata.CatalogIDValidation.Threshold = 0
+			},
+			expectError:   true,
+			errorContains: "metadata.catalog_id_validation.threshold must be > 0 and <= 1",
+		},
+		{
+			name: "Jev catalog validation threshold too high",
+			modifyConfig: func(c *Config) {
+				c.Metadata.CatalogIDValidation.Threshold = 1.01
+			},
+			expectError:   true,
+			errorContains: "metadata.catalog_id_validation.threshold must be > 0 and <= 1",
+		},
+		{
+			name: "Jev catalog validation enabled valid",
+			modifyConfig: func(c *Config) {
+				c.Metadata.CatalogIDValidation.Enabled = true
+				c.Metadata.CatalogIDValidation.Threshold = 0.80
+				c.Metadata.CatalogIDValidation.Model = "jev-latest"
+				c.Metadata.CatalogIDValidation.Endpoint = "https://api.typesafe.ai/v1/systemone"
+			},
+			expectError: false,
+		},
+		{
+			name: "Jev catalog validation enabled missing model",
+			modifyConfig: func(c *Config) {
+				c.Metadata.CatalogIDValidation.Enabled = true
+				c.Metadata.CatalogIDValidation.Model = ""
+			},
+			expectError:   true,
+			errorContains: "metadata.catalog_id_validation.model is required when enabled",
+		},
+		{
+			name: "Jev catalog validation enabled invalid endpoint",
+			modifyConfig: func(c *Config) {
+				c.Metadata.CatalogIDValidation.Enabled = true
+				c.Metadata.CatalogIDValidation.Endpoint = "not-a-url"
+			},
+			expectError:   true,
+			errorContains: "metadata.catalog_id_validation.endpoint must be a valid http(s) URL when enabled",
+		},
+		{
 			name: "logging max_size_mb negative",
 			modifyConfig: func(c *Config) {
 				c.Logging.MaxSizeMB = -1
