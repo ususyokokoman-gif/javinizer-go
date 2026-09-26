@@ -16,6 +16,7 @@
 	import DatabaseSettingsSection from '$lib/components/settings/sections/DatabaseSettingsSection.svelte';
 	import R18DevDumpSection from '$lib/components/settings/sections/R18DevDumpSection.svelte';
 	import TranslationSettingsSection from '$lib/components/settings/sections/TranslationSettingsSection.svelte';
+	import CatalogIDValidationSettingsSection from '$lib/components/settings/sections/CatalogIDValidationSettingsSection.svelte';
 	import NfoSettingsSection from '$lib/components/settings/sections/NfoSettingsSection.svelte';
 	import ProxySettingsSection from '$lib/components/settings/sections/ProxySettingsSection.svelte';
 	import PerformanceSettingsSection from '$lib/components/settings/sections/PerformanceSettingsSection.svelte';
@@ -228,6 +229,8 @@
 			</SettingsSection>
 
 			<CompletenessSettingsSection config={settings.settingsConfig} inputClass={settings.inputClass} selectClass={settings.selectClass} />
+
+			<CatalogIDValidationSettingsSection config={settings.settingsConfig} inputClass={settings.inputClass} />
 
 			<FileOperationsSettingsSection config={settings.settingsConfig} />
 			<OutputSettingsSection config={settings.settingsConfig} inputClass={settings.inputClass} selectClass={settings.selectClass} />
