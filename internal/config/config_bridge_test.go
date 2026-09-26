@@ -125,17 +125,32 @@ func TestDownloaderConfigFromAppConfig_NilConfig(t *testing.T) {
 }
 
 func TestScrapeConfigFromAppConfig_RoundTrip(t *testing.T) {
+	t.Setenv("TYPESAFE_API_KEY", "")
+	t.Setenv("JAVINIZER_JEV_CATALOG_THRESHOLD", "")
+	t.Setenv("JAVINIZER_JEV_MODEL", "")
+	t.Setenv("JAVINIZER_JEV_ENDPOINT", "")
+
 	cfg := config.DefaultConfig(nil, nil)
 	_, err := config.Prepare(cfg)
 	require.NoError(t, err)
 
 	cfg.Scrapers.Priority = []string{"r18dev", "dmm"}
 	cfg.Scrapers.UserAgent = "TestAgent/1.0"
+	cfg.Metadata.CatalogIDValidation.Enabled = true
+	cfg.Metadata.CatalogIDValidation.APIKey = "jev-config-key"
+	cfg.Metadata.CatalogIDValidation.Threshold = 0.83
+	cfg.Metadata.CatalogIDValidation.Model = "jev-test-model"
+	cfg.Metadata.CatalogIDValidation.Endpoint = "https://api.typesafe.ai/v1/systemone"
 
 	got := scrape.ConfigFromAppConfig(cfg)
 	require.NotNil(t, got)
 	assert.Equal(t, []string{"r18dev", "dmm"}, got.ScrapersPriority)
 	assert.Equal(t, "TestAgent/1.0", got.UserAgent)
+	assert.True(t, got.JevCatalogEnabled)
+	assert.Equal(t, "jev-config-key", got.JevCatalogAPIKey)
+	assert.Equal(t, 0.83, got.JevCatalogThreshold)
+	assert.Equal(t, "jev-test-model", got.JevCatalogModel)
+	assert.Equal(t, "https://api.typesafe.ai/v1/systemone", got.JevCatalogEndpoint)
 }
 
 func TestScrapeConfigFromAppConfig_NilConfig(t *testing.T) {
