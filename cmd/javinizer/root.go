@@ -10,6 +10,7 @@ import (
 	"github.com/javinizer/javinizer-go/cmd/javinizer/commands/actress"
 	"github.com/javinizer/javinizer-go/cmd/javinizer/commands/api"
 	"github.com/javinizer/javinizer-go/cmd/javinizer/commands/app"
+	"github.com/javinizer/javinizer-go/cmd/javinizer/commands/bulktitle"
 	configcmd "github.com/javinizer/javinizer-go/cmd/javinizer/commands/config"
 	"github.com/javinizer/javinizer-go/cmd/javinizer/commands/dump"
 	"github.com/javinizer/javinizer-go/cmd/javinizer/commands/genre"
@@ -125,6 +126,7 @@ func init() {
 		actress.NewCommand(),
 		api.NewCommand(),
 		app.NewCommand(),
+		bulktitle.NewCommand(),
 		configcmd.NewCommand(),
 		dump.NewCommand(),
 		genre.NewCommand(),
