@@ -75,18 +75,18 @@ func (s *Scraper) lookupCatalogIDOnWeb(ctx context.Context, title string) (strin
 		logging.Infof("[scrape] web search provider=%s query=%q results=%d merged=%d", providerEvidence, truncateRunes(q, 120), len(results), len(merged))
 		if id, ok := chooseCatalogCandidate(title, merged); ok && candidateHasTrustedEvidence(id, merged) {
 			if !directOK {
-				return id, nil
+				return s.finalizeCatalogCandidate(ctx, title, id, merged)
 			}
 			if catalogComparable(id) == catalogComparable(directID) && len(candidateTrustedSources(id, merged)) >= 2 {
 				logging.Infof("[scrape] direct title candidate %s corroborated by %d trusted source families", id, len(candidateTrustedSources(id, merged)))
-				return id, nil
+				return s.finalizeCatalogCandidate(ctx, title, id, merged)
 			}
 		}
 	}
 
 	if !directOK {
 		if id, ok := chooseCatalogCandidate(title, merged); ok {
-			return id, nil
+			return s.finalizeCatalogCandidate(ctx, title, id, merged)
 		}
 		if lastErr != nil && len(merged) == 0 {
 			return "", lastErr
@@ -99,7 +99,7 @@ func (s *Scraper) lookupCatalogIDOnWeb(ctx context.Context, title string) (strin
 		return "", err
 	}
 	logging.Infof("[scrape] using verified direct title candidate %s after no conflicting strong web evidence was found", id)
-	return id, nil
+	return s.finalizeCatalogCandidate(ctx, title, id, merged)
 }
 
 func chooseVerifiedDirectFallback(title, directID string, webEvidence []titleWebSearchResult) (string, error) {
