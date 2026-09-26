@@ -22,6 +22,10 @@ type Config struct {
 	Referer                 string
 	TempDir                 string
 	FilenameKeepWords       []string
+	JevCatalogAPIKey        string
+	JevCatalogThreshold     float64
+	JevCatalogModel         string
+	JevCatalogEndpoint      string
 }
 
 // Translator is the interface for applying metadata translation to a scraped Movie.
@@ -148,5 +152,6 @@ func ConfigFromAppConfig(cfg *config.Config) *Config {
 	if c.TranslationEnabled {
 		c.TranslationSettingsHash = cfg.Metadata.Translation.SettingsHash()
 	}
+	applyJevCatalogGateEnv(c)
 	return c
 }
