@@ -8,6 +8,18 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+func TestPreserveRedactedSecrets_JevCatalogAPIKey(t *testing.T) {
+	old := config.DefaultConfig(nil, nil)
+	old.Metadata.CatalogIDValidation.APIKey = "typesafe-real-key"
+
+	newCfg := config.DefaultConfig(nil, nil)
+	newCfg.Metadata.CatalogIDValidation.APIKey = models.RedactedValue
+
+	preserveRedactedSecrets(old, newCfg)
+
+	assert.Equal(t, "typesafe-real-key", newCfg.Metadata.CatalogIDValidation.APIKey)
+}
+
 func TestPreserveRedactedSecrets_OverrideLoop_PatchGaps(t *testing.T) {
 	t.Run("nil old override entry is skipped leaving new redacted values untouched", func(t *testing.T) {
 		old := config.DefaultConfig(nil, nil)
