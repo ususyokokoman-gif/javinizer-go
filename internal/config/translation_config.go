@@ -25,10 +25,22 @@ type MetadataConfig struct {
 	TagDatabase      tagDatabaseConfig      `yaml:"tag_database" json:"tag_database"`           // Per-movie tag database (SQLite-backed)
 	R18DevDump       R18DevDumpConfig       `yaml:"r18dev_dump" json:"r18dev_dump"`             // Local r18.dev dump lookup (SQLite-backed)
 	Translation      TranslationConfig      `yaml:"translation" json:"translation"`             // Metadata translation pipeline
+	CatalogIDValidation CatalogIDValidationConfig `yaml:"catalog_id_validation" json:"catalog_id_validation"` // Jev validation for title-resolved catalog IDs
 	IgnoreGenres     []string               `yaml:"ignore_genres" json:"ignore_genres"`
 	RequiredFields   []string               `yaml:"required_fields" json:"required_fields"`
 	NFO              NFOConfig              `yaml:"nfo" json:"nfo"`
 	Completeness     completenessConfig     `yaml:"completeness" json:"completeness"` // Completeness scoring configuration
+}
+
+
+// CatalogIDValidationConfig controls Jev validation for catalog IDs resolved from titles.
+// When enabled, a candidate is adopted only when Jev's yes-probability meets Threshold.
+type CatalogIDValidationConfig struct {
+	Enabled   bool    `yaml:"enabled" json:"enabled"`
+	Threshold float64 `yaml:"threshold" json:"threshold"`
+	Model     string  `yaml:"model" json:"model"`
+	Endpoint  string  `yaml:"endpoint" json:"endpoint"`
+	APIKey    string  `yaml:"api_key" json:"api_key"`
 }
 
 // TranslationConfig holds metadata translation settings.
