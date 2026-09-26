@@ -34,6 +34,7 @@ export interface SettingsStore {
 	translationModelOptions: string[];
 	ensureProxyProfilesInitialized: () => void;
 	ensureTranslationConfig: () => void;
+	ensureCatalogIDValidationConfig: () => void;
 	updateProxyConfigBaseline: () => void;
 	checkProxyConfigDirty: () => boolean;
 	canSafelySave: () => boolean;
@@ -167,6 +168,22 @@ export function createSettingsStore(deps: SettingsStoreDeps): SettingsStore {
 		}
 	}
 
+	function ensureCatalogIDValidationConfig(): void {
+		if (!config) return;
+		const cfg = config;
+		if (!cfg.metadata) cfg.metadata = {};
+		if (!cfg.metadata.catalog_id_validation || typeof cfg.metadata.catalog_id_validation !== 'object') {
+			cfg.metadata.catalog_id_validation = {};
+		}
+		const validation = cfg.metadata.catalog_id_validation;
+		if (validation.enabled === undefined) validation.enabled = false;
+		if (validation.threshold === undefined || validation.threshold <= 0 || validation.threshold > 1)
+			validation.threshold = 0.8;
+		if (!validation.model) validation.model = 'jev-latest';
+		if (!validation.endpoint) validation.endpoint = 'https://api.typesafe.ai/v1/systemone';
+		if (!validation.api_key) validation.api_key = '';
+	}
+
 	function ensureTranslationConfig(): void {
 		if (!config) return;
 		const cfg = config;
@@ -235,6 +252,7 @@ export function createSettingsStore(deps: SettingsStoreDeps): SettingsStore {
 		config = JSON.parse(JSON.stringify(data));
 		ensureProxyProfilesInitialized();
 		ensureTranslationConfig();
+		ensureCatalogIDValidationConfig();
 		deps.onConfigInitialized();
 		updateProxyConfigBaseline();
 	}
@@ -392,6 +410,7 @@ export function createSettingsStore(deps: SettingsStoreDeps): SettingsStore {
 		},
 		ensureProxyProfilesInitialized,
 		ensureTranslationConfig,
+		ensureCatalogIDValidationConfig,
 		updateProxyConfigBaseline,
 		checkProxyConfigDirty,
 		canSafelySave,
