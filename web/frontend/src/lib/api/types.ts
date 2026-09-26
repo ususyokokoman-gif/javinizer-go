@@ -992,6 +992,14 @@ export interface TranslationConfig {
 	anthropic?: AnthropicTranslationConfig;
 }
 
+export interface CatalogIDValidationConfig {
+	enabled?: boolean;
+	threshold?: number;
+	model?: string;
+	endpoint?: string;
+	api_key?: string;
+}
+
 export interface ActressDatabaseConfig {
 	enabled?: boolean;
 	auto_add?: boolean;
@@ -1033,6 +1041,7 @@ export interface MetadataConfig {
 	genre_replacement?: GenreReplacementConfig;
 	word_replacement?: WordReplacementConfig;
 	tag_database?: TagDatabaseConfig;
+	catalog_id_validation?: CatalogIDValidationConfig;
 	translation?: TranslationConfig;
 	ignore_genres?: string[];
 	required_fields?: string[];
