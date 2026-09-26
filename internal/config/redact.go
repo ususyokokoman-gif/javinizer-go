@@ -20,6 +20,7 @@ func (c *Config) Redact() *Config {
 	copy.Metadata.Translation.Google.APIKey = redactString(copy.Metadata.Translation.Google.APIKey)
 	copy.Metadata.Translation.OpenAICompatible.APIKey = redactString(copy.Metadata.Translation.OpenAICompatible.APIKey)
 	copy.Metadata.Translation.Anthropic.APIKey = redactString(copy.Metadata.Translation.Anthropic.APIKey)
+	copy.Metadata.CatalogIDValidation.APIKey = redactString(copy.Metadata.CatalogIDValidation.APIKey)
 
 	copy.Scrapers.Proxy = copy.Scrapers.Proxy.Redact()
 	copy.Output.Download.DownloadProxy = copy.Output.Download.DownloadProxy.Redact()
