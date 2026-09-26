@@ -26,6 +26,7 @@ func TestJevCatalogGateAcceptsAtThreshold(t *testing.T) {
 	s := &Scraper{
 		httpClient: server.Client(),
 		cfg: &Config{
+			JevCatalogEnabled: true,
 			JevCatalogAPIKey:    "test-key",
 			JevCatalogThreshold: 0.80,
 			JevCatalogModel:     "jev-test",
@@ -69,6 +70,7 @@ func TestJevCatalogGateRejectsBelowThreshold(t *testing.T) {
 	s := &Scraper{
 		httpClient: server.Client(),
 		cfg: &Config{
+			JevCatalogEnabled: true,
 			JevCatalogAPIKey:    "test-key",
 			JevCatalogThreshold: 0.80,
 			JevCatalogModel:     "jev-test",
@@ -94,6 +96,7 @@ func TestJevCatalogGateFailsClosedOnAPIError(t *testing.T) {
 	s := &Scraper{
 		httpClient: server.Client(),
 		cfg: &Config{
+			JevCatalogEnabled: true,
 			JevCatalogAPIKey:    "test-key",
 			JevCatalogThreshold: 0.80,
 			JevCatalogModel:     "jev-test",
@@ -130,6 +133,9 @@ func TestApplyJevCatalogGateEnvDefaultsToPointEight(t *testing.T) {
 	cfg := &Config{}
 	applyJevCatalogGateEnv(cfg)
 
+	if !cfg.JevCatalogEnabled {
+		t.Fatal("Jev catalog gate was not enabled by TYPESAFE_API_KEY")
+	}
 	if cfg.JevCatalogAPIKey != "secret" {
 		t.Fatalf("api key not loaded")
 	}
@@ -167,5 +173,22 @@ func TestBuildJevCatalogEvidenceKeepsRelevantTrustedEvidence(t *testing.T) {
 	}
 	if len(got[0].CatalogIDs) != 1 || got[0].CatalogIDs[0] != "IPX-072" {
 		t.Fatalf("catalog IDs = %#v", got[0].CatalogIDs)
+	}
+}
+
+
+func TestJevCatalogGateEnabledWithoutKeyFailsClosed(t *testing.T) {
+	s := &Scraper{cfg: &Config{
+		JevCatalogEnabled:   true,
+		JevCatalogThreshold: 0.80,
+		JevCatalogModel:     "jev-latest",
+		JevCatalogEndpoint:  "https://api.typesafe.ai/v1/systemone",
+	}}
+	_, err := s.finalizeCatalogCandidate(context.Background(), "作品タイトル", "SSIS-001", nil)
+	if err == nil {
+		t.Fatal("expected missing-key failure")
+	}
+	if !strings.Contains(err.Error(), "API key is missing") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
