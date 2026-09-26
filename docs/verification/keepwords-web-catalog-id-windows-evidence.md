@@ -1,6 +1,20 @@
 # KEEPWORDS / Web Catalog-ID Windows Verification Evidence
 
-STATUS: COMPLETE
+STATUS: INCOMPLETE
+
+## Extended completion criterion — Jev + real-file E2E
+
+The previous Windows verification proves the public-Web resolver and packaged EXE paths only. Product completion now additionally requires:
+
+- title/filename -> public-Web candidate Catalog ID
+- Jev System One verification of the selected candidate
+- Jev yes-probability threshold: `>= 0.80` accepts; `< 0.80` rejects
+- Jev API error / malformed response / enabled-without-key: fail closed
+- the packaged Windows EXE must demonstrate the same behavior on actual user file titles, not only the fixed five-title acceptance matrix
+- real-file test evidence must record filename/title, Web candidate, provider/result count, Jev probability, adoption/rejection, and final resolved ID
+- only after the real-file corpus passes with no unresolved mismatches may overall STATUS return to COMPLETE
+
+Phase 1 (Web search + Gate A/B/C + SHA/distribution identity) remains valid and passed. The overall product is intentionally marked INCOMPLETE until the Jev and real-file gates are proven.
 
 ## Purpose
 
@@ -194,4 +208,4 @@ The separate job re-downloaded both published Release assets from GitHub and ver
 - distribution EXE physically inspected: PASS
 - unresolved issues: 0
 
-STATUS: COMPLETE
+STATUS: INCOMPLETE
