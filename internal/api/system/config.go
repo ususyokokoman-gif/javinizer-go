@@ -269,6 +269,9 @@ func preserveRedactedSecrets(old, new *config.Config) {
 	if new.Metadata.Translation.Anthropic.APIKey == models.RedactedValue {
 		new.Metadata.Translation.Anthropic.APIKey = old.Metadata.Translation.Anthropic.APIKey
 	}
+	if new.Metadata.CatalogIDValidation.APIKey == models.RedactedValue {
+		new.Metadata.CatalogIDValidation.APIKey = old.Metadata.CatalogIDValidation.APIKey
+	}
 
 	preserveRedactedProxyProfiles(old.Scrapers.Proxy.Profiles, new.Scrapers.Proxy.Profiles)
 	preserveRedactedProxyProfiles(old.Output.Download.DownloadProxy.Profiles, new.Output.Download.DownloadProxy.Profiles)
