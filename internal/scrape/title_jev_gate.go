@@ -68,21 +68,25 @@ func applyJevCatalogGateEnv(cfg *Config) {
 	if cfg == nil {
 		return
 	}
-	key := strings.TrimSpace(os.Getenv("TYPESAFE_API_KEY"))
-	if key == "" {
-		return
+	if cfg.JevCatalogThreshold <= 0 || cfg.JevCatalogThreshold > 1 {
+		cfg.JevCatalogThreshold = defaultJevCatalogThreshold
+	}
+	if strings.TrimSpace(cfg.JevCatalogModel) == "" {
+		cfg.JevCatalogModel = defaultJevCatalogModel
+	}
+	if strings.TrimSpace(cfg.JevCatalogEndpoint) == "" {
+		cfg.JevCatalogEndpoint = defaultJevSystemOneURL
 	}
 
-	cfg.JevCatalogAPIKey = key
-	cfg.JevCatalogThreshold = defaultJevCatalogThreshold
-	cfg.JevCatalogModel = defaultJevCatalogModel
-	cfg.JevCatalogEndpoint = defaultJevSystemOneURL
-
+	if key := strings.TrimSpace(os.Getenv("TYPESAFE_API_KEY")); key != "" {
+		cfg.JevCatalogAPIKey = key
+		cfg.JevCatalogEnabled = true
+	}
 	if raw := strings.TrimSpace(os.Getenv("JAVINIZER_JEV_CATALOG_THRESHOLD")); raw != "" {
-		if parsed, err := strconv.ParseFloat(raw, 64); err == nil && parsed >= 0 && parsed <= 1 {
+		if parsed, err := strconv.ParseFloat(raw, 64); err == nil && parsed > 0 && parsed <= 1 {
 			cfg.JevCatalogThreshold = parsed
 		} else {
-			logging.Warnf("[scrape] invalid JAVINIZER_JEV_CATALOG_THRESHOLD=%q; using %.2f", raw, defaultJevCatalogThreshold)
+			logging.Warnf("[scrape] invalid JAVINIZER_JEV_CATALOG_THRESHOLD=%q; using %.2f", raw, cfg.JevCatalogThreshold)
 		}
 	}
 	if model := strings.TrimSpace(os.Getenv("JAVINIZER_JEV_MODEL")); model != "" {
@@ -93,8 +97,12 @@ func applyJevCatalogGateEnv(cfg *Config) {
 	}
 }
 
+func (s *Scraper) jevCatalogGateConfigured() bool {
+	return s != nil && s.cfg != nil && s.cfg.JevCatalogEnabled
+}
+
 func (s *Scraper) jevCatalogGateEnabled() bool {
-	return s != nil && s.cfg != nil && strings.TrimSpace(s.cfg.JevCatalogAPIKey) != ""
+	return s.jevCatalogGateConfigured() && strings.TrimSpace(s.cfg.JevCatalogAPIKey) != ""
 }
 
 func (s *Scraper) jevValidateCatalogCandidate(
@@ -103,8 +111,11 @@ func (s *Scraper) jevValidateCatalogCandidate(
 	candidateID string,
 	evidence []titleWebSearchResult,
 ) (jevCatalogDecision, error) {
-	if !s.jevCatalogGateEnabled() {
+	if !s.jevCatalogGateConfigured() {
 		return jevCatalogDecision{}, fmt.Errorf("Jev catalog gate is not enabled")
+	}
+	if !s.jevCatalogGateEnabled() {
+		return jevCatalogDecision{}, fmt.Errorf("Jev catalog gate is enabled but TYPESAFE API key is missing")
 	}
 	if s.httpClient == nil {
 		return jevCatalogDecision{}, fmt.Errorf("Jev catalog gate has no HTTP client")
@@ -214,8 +225,11 @@ func (s *Scraper) finalizeCatalogCandidate(
 	if candidateID == "" {
 		return "", fmt.Errorf("catalog-ID candidate is empty")
 	}
-	if !s.jevCatalogGateEnabled() {
+	if !s.jevCatalogGateConfigured() {
 		return candidateID, nil
+	}
+	if !s.jevCatalogGateEnabled() {
+		return "", fmt.Errorf("Jev catalog gate is enabled but API key is missing")
 	}
 
 	decision, err := s.jevValidateCatalogCandidate(ctx, title, candidateID, evidence)
