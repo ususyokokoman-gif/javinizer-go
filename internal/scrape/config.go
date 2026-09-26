@@ -22,6 +22,7 @@ type Config struct {
 	Referer                 string
 	TempDir                 string
 	FilenameKeepWords       []string
+	JevCatalogEnabled       bool
 	JevCatalogAPIKey        string
 	JevCatalogThreshold     float64
 	JevCatalogModel         string
@@ -148,6 +149,11 @@ func ConfigFromAppConfig(cfg *config.Config) *Config {
 		Referer:               cfg.Scrapers.Referer,
 		TempDir:               cfg.System.TempDir,
 		FilenameKeepWords:     extractKeepWordsFromOutputConfig(cfg.Output),
+		JevCatalogEnabled:     cfg.Metadata.CatalogIDValidation.Enabled,
+		JevCatalogAPIKey:      cfg.Metadata.CatalogIDValidation.APIKey,
+		JevCatalogThreshold:   cfg.Metadata.CatalogIDValidation.Threshold,
+		JevCatalogModel:       cfg.Metadata.CatalogIDValidation.Model,
+		JevCatalogEndpoint:    cfg.Metadata.CatalogIDValidation.Endpoint,
 	}
 	if c.TranslationEnabled {
 		c.TranslationSettingsHash = cfg.Metadata.Translation.SettingsHash()
