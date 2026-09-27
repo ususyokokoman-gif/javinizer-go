@@ -260,7 +260,16 @@ func removeExactDuplicates(files []fileItem, quickBytes int64) ([]fileItem, []du
 				if len(fullGroup) < 2 {
 					continue
 				}
-				sort.Slice(fullGroup, func(i, j int) bool { return fullGroup[i].Path < fullGroup[j].Path })
+				sort.Slice(fullGroup, func(i, j int) bool {
+					iName := strings.TrimSuffix(filepath.Base(fullGroup[i].Path), filepath.Ext(fullGroup[i].Path))
+					jName := strings.TrimSuffix(filepath.Base(fullGroup[j].Path), filepath.Ext(fullGroup[j].Path))
+					iRunes := len([]rune(iName))
+					jRunes := len([]rune(jName))
+					if iRunes != jRunes {
+						return iRunes > jRunes
+					}
+					return fullGroup[i].Path < fullGroup[j].Path
+				})
 				canonical := fullGroup[0]
 				for _, dup := range fullGroup[1:] {
 					duplicateSet[dup.Path] = struct{}{}
