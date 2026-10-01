@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -236,6 +237,38 @@ func (s *Scraper) finalizeCatalogCandidate(
 	if err != nil {
 		logging.Warnf("[scrape] Jev catalog gate failed closed for candidate=%s: %v", candidateID, err)
 		return "", fmt.Errorf("Jev catalog validation failed for %s: %w", candidateID, err)
+	}
+
+	// System One scores close to the automation threshold can move a few
+	// hundredths between otherwise equivalent calls. Do not lower the threshold:
+	// only re-sample the narrow borderline band and require a 3-vote median.
+	// Clear accepts and clear rejects remain single-call decisions.
+	const borderlineRetryBand = 0.10
+	if decision.Probability < decision.Threshold &&
+		decision.Probability >= decision.Threshold-borderlineRetryBand {
+		probabilities := []float64{decision.Probability}
+		for len(probabilities) < 3 {
+			retryDecision, retryErr := s.jevValidateCatalogCandidate(ctx, title, candidateID, evidence)
+			if retryErr != nil {
+				logging.Warnf("[scrape] Jev borderline retry failed closed for candidate=%s: %v", candidateID, retryErr)
+				return "", fmt.Errorf("Jev catalog validation failed for %s during borderline retry: %w", candidateID, retryErr)
+			}
+			probabilities = append(probabilities, retryDecision.Probability)
+			if decision.Model == "" {
+				decision.Model = retryDecision.Model
+			}
+		}
+		sort.Float64s(probabilities)
+		decision.Probability = probabilities[len(probabilities)/2]
+		logging.Infof(
+			"[scrape] Jev borderline vote candidate=%s probabilities=%.3f,%.3f,%.3f median=%.3f threshold=%.3f",
+			candidateID,
+			probabilities[0],
+			probabilities[1],
+			probabilities[2],
+			decision.Probability,
+			decision.Threshold,
+		)
 	}
 
 	model := decision.Model
