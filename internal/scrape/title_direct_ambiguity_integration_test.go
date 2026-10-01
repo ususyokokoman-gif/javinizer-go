@@ -79,3 +79,49 @@ func TestLookupCatalogIDOnWebFailsClosedBeforeGoogleForAmbiguousDirectTitle(t *t
 		t.Fatalf("Google/search HTTP called %d times after direct ambiguity was proven; want 0", httpClient.calls)
 	}
 }
+
+type exactTitleDirectScraper struct {
+	settings models.ScraperSettings
+}
+
+func (s *exactTitleDirectScraper) Name() string { return "javdb" }
+func (s *exactTitleDirectScraper) Search(context.Context, string) (*models.ScraperResult, error) {
+	return nil, fmt.Errorf("not used")
+}
+func (s *exactTitleDirectScraper) GetURL(context.Context, string) (string, error) {
+	return "", fmt.Errorf("not used")
+}
+func (s *exactTitleDirectScraper) IsEnabled() bool { return true }
+func (s *exactTitleDirectScraper) Config() *models.ScraperSettings { return &s.settings }
+func (s *exactTitleDirectScraper) Close() error { return nil }
+func (s *exactTitleDirectScraper) SearchTitleCandidates(_ context.Context, title string, _ int) ([]*models.ScraperResult, error) {
+	return []*models.ScraperResult{{
+		Source:        "javdb",
+		SourceURL:     "https://javdb.com/v/exact",
+		ID:            "IPX-072",
+		Title:         title,
+		OriginalTitle: title,
+	}}, nil
+}
+
+func TestLookupCatalogIDOnWebExactDirectTitleBypassesGeneralWeb(t *testing.T) {
+	registry := scraperutil.NewScraperRegistry()
+	registry.RegisterInstance(&exactTitleDirectScraper{})
+	httpClient := &countingRejectHTTPClient{}
+	s := &Scraper{
+		registry:   registry,
+		httpClient: httpClient,
+		cfg:        &Config{},
+	}
+
+	id, err := s.lookupCatalogIDOnWeb(context.Background(), "狙われた通学路 共謀痴漢電車 桃乃木かな")
+	if err != nil {
+		t.Fatalf("lookupCatalogIDOnWeb returned error: %v", err)
+	}
+	if id != "IPX-072" {
+		t.Fatalf("resolved ID=%q, want IPX-072", id)
+	}
+	if httpClient.calls != 0 {
+		t.Fatalf("general-web HTTP called %d times for exact verified direct title; want 0", httpClient.calls)
+	}
+}
