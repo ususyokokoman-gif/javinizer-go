@@ -24,10 +24,11 @@ func (s *Scraper) lookupCatalogIDOnWeb(ctx context.Context, title string) (strin
 
 	var directID string
 	var directOK bool
+	var directExact bool
 	if exactID, ok := chooseExactDirectTitleCandidate(title, directEvidence); ok {
 		// Exact, unique detail-page title identity is stronger than the general
 		// ranking heuristic, so prefer it whenever it exists.
-		directID, directOK = exactID, true
+		directID, directOK, directExact = exactID, true, true
 		logging.Infof("[scrape] unique exact direct title candidate selected: %s", directID)
 	} else {
 		// If two or more verified detail pages are compatible with the supplied
@@ -41,6 +42,16 @@ func (s *Scraper) lookupCatalogIDOnWeb(ctx context.Context, title string) (strin
 		if directOK && !candidateHasTrustedEvidence(directID, directEvidence) {
 			directID, directOK = "", false
 		}
+	}
+
+	if directExact {
+		// A unique exact title from a verified direct detail page already proves
+		// title identity more strongly than a public search-engine snippet. Send
+		// that stable evidence straight to the Jev gate instead of issuing a
+		// redundant general-web query that becomes the dominant rate-limit
+		// failure mode during high-volume runs.
+		logging.Infof("[scrape] exact direct title candidate %s bypasses general web search", directID)
+		return s.finalizeCatalogCandidate(ctx, title, directID, merged)
 	}
 
 	queries := buildTitleWebQueries(title)
