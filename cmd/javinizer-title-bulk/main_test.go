@@ -51,3 +51,41 @@ func TestRemoveExactDuplicates(t *testing.T) {
 		t.Fatalf("duplicate=%q, want %q", duplicates[0].DuplicatePath, b)
 	}
 }
+
+func TestRemoveExactDuplicatesPreservesDescriptiveFilename(t *testing.T) {
+	dir := t.TempDir()
+	descriptive := filepath.Join(dir, "一ヶ月間の禁欲の果てに彼女のルームメイト2人と浮気SEXだけに没頭した彼女不在の3日間.mp4")
+	weak := filepath.Join(dir, "duplicate-copy.mp4")
+	data := []byte("identical-media-content")
+
+	if err := os.WriteFile(descriptive, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(weak, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	files := []fileItem{
+		{Path: weak, Size: int64(len(data))},
+		{Path: descriptive, Size: int64(len(data))},
+	}
+	unique, duplicates, err := removeExactDuplicates(files, 64<<10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unique) != 1 {
+		t.Fatalf("unique=%d, want 1", len(unique))
+	}
+	if unique[0].Path != descriptive {
+		t.Fatalf("kept=%q, want descriptive %q", unique[0].Path, descriptive)
+	}
+	if len(duplicates) != 1 {
+		t.Fatalf("duplicates=%d, want 1", len(duplicates))
+	}
+	if duplicates[0].CanonicalPath != descriptive {
+		t.Fatalf("canonical=%q, want %q", duplicates[0].CanonicalPath, descriptive)
+	}
+	if duplicates[0].DuplicatePath != weak {
+		t.Fatalf("duplicate=%q, want %q", duplicates[0].DuplicatePath, weak)
+	}
+}
