@@ -64,7 +64,7 @@ func main() {
 	var (
 		root       = flag.String("root", "", "Root directory containing media files")
 		outDir     = flag.String("out", "bulk-title-jev-output", "Output directory")
-		workers    = flag.Int("workers", 16, "Concurrent title->Web->Jev workers")
+		workers    = flag.Int("workers", 4, "Concurrent unique-title -> Web -> Jev workers")
 		timeout    = flag.Duration("timeout", 45*time.Second, "Per-title timeout")
 		quickBytes = flag.Int64("quick-hash-bytes", 1<<20, "Bytes sampled from head and tail for duplicate prefilter")
 		skipDup    = flag.Bool("skip-duplicates", false, "Skip duplicate detection")
