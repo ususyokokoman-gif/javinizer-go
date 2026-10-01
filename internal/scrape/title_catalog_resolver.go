@@ -6,10 +6,6 @@ import (
 	"net/http"
 	"strings"
 	"time"
-
-	"github.com/javinizer/javinizer-go/internal/logging"
-	"github.com/javinizer/javinizer-go/internal/scraper/javdb"
-	"github.com/javinizer/javinizer-go/internal/scraperutil"
 )
 
 // TitleCatalogResolver is a lightweight title -> catalog ID resolver.
@@ -39,34 +35,8 @@ func NewTitleCatalogResolver(cfg *Config) *TitleCatalogResolver {
 	}
 
 	client := &http.Client{Timeout: 30 * time.Second}
-
-	// The bulk title resolver used to leave registry nil, which silently
-	// disabled collectDirectTitleEvidence and forced every title through public
-	// search engines. Register only JavDB here as the verified direct-title
-	// source; final metadata scraping remains outside this lightweight resolver.
-	registry := scraperutil.NewScraperRegistry()
-	javdb.Register(registry)
-	defaults := registry.GetAllDefaults()
-	if settings, ok := defaults["javdb"]; ok {
-		if settings.Timeout <= 0 {
-			settings.Timeout = 20
-		}
-		if settings.RateLimit <= 0 {
-			settings.RateLimit = 1000
-		}
-		if settings.RetryCount <= 0 {
-			settings.RetryCount = 1
-		}
-		if err := registry.InitInstances(map[string]scraperutil.ScraperDeps{
-			"javdb": {Settings: settings},
-		}); err != nil {
-			logging.Warnf("[scrape] initialize JavDB title resolver: %v", err)
-		}
-	}
-
 	return &TitleCatalogResolver{
 		scraper: &Scraper{
-			registry:   registry,
 			httpClient: client,
 			cfg:        &resolved,
 		},
