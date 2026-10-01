@@ -89,3 +89,25 @@ func TestRemoveExactDuplicatesPreservesDescriptiveFilename(t *testing.T) {
 		t.Fatalf("duplicate=%q, want %q", duplicates[0].DuplicatePath, weak)
 	}
 }
+
+func TestBuildTitleWorkGroupsSameTitleAcrossFolders(t *testing.T) {
+	files := []fileItem{
+		{Path: filepath.Join("set-01", "同じ作品タイトル.mp4"), Size: 100},
+		{Path: filepath.Join("set-02", "同じ作品タイトル.mp4"), Size: 200},
+		{Path: filepath.Join("set-03", "別作品タイトル.mp4"), Size: 300},
+	}
+
+	tasks := buildTitleWork(files)
+	if len(tasks) != 2 {
+		t.Fatalf("tasks=%d, want 2", len(tasks))
+	}
+	if tasks[0].Title != "同じ作品タイトル" {
+		t.Fatalf("first title=%q", tasks[0].Title)
+	}
+	if len(tasks[0].Indices) != 2 || tasks[0].Indices[0] != 0 || tasks[0].Indices[1] != 1 {
+		t.Fatalf("first indices=%v, want [0 1]", tasks[0].Indices)
+	}
+	if tasks[1].Title != "別作品タイトル" || len(tasks[1].Indices) != 1 || tasks[1].Indices[0] != 2 {
+		t.Fatalf("second task=%+v", tasks[1])
+	}
+}
