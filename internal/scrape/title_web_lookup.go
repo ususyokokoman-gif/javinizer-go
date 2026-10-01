@@ -24,11 +24,10 @@ func (s *Scraper) lookupCatalogIDOnWeb(ctx context.Context, title string) (strin
 
 	var directID string
 	var directOK bool
-	var directExact bool
 	if exactID, ok := chooseExactDirectTitleCandidate(title, directEvidence); ok {
 		// Exact, unique detail-page title identity is stronger than the general
 		// ranking heuristic, so prefer it whenever it exists.
-		directID, directOK, directExact = exactID, true, true
+		directID, directOK = exactID, true
 		logging.Infof("[scrape] unique exact direct title candidate selected: %s", directID)
 	} else {
 		// If two or more verified detail pages are compatible with the supplied
@@ -42,16 +41,6 @@ func (s *Scraper) lookupCatalogIDOnWeb(ctx context.Context, title string) (strin
 		if directOK && !candidateHasTrustedEvidence(directID, directEvidence) {
 			directID, directOK = "", false
 		}
-	}
-
-	if directExact {
-		// A unique exact title from a verified direct detail page already proves
-		// title identity more strongly than a public search-engine snippet. Send
-		// that stable evidence straight to the Jev gate instead of issuing a
-		// redundant general-web query that becomes the dominant rate-limit
-		// failure mode during high-volume runs.
-		logging.Infof("[scrape] exact direct title candidate %s bypasses general web search", directID)
-		return s.finalizeCatalogCandidate(ctx, title, directID, merged)
 	}
 
 	queries := buildTitleWebQueries(title)
@@ -84,11 +73,19 @@ func (s *Scraper) lookupCatalogIDOnWeb(ctx context.Context, title string) (strin
 			providerEvidence = "duckduckgo-miss->bing"
 		}
 		logging.Infof("[scrape] web search provider=%s query=%q results=%d merged=%d", providerEvidence, truncateRunes(q, 120), len(results), len(merged))
-		if id, ok := chooseCatalogCandidate(title, merged); ok && candidateHasTrustedEvidence(id, merged) {
+		if id, ok := chooseCatalogCandidate(title, merged); ok {
 			if !directOK {
-				return s.finalizeCatalogCandidate(ctx, title, id, merged)
+				// chooseCatalogCandidate already requires either trusted evidence
+				// or repeated, high-scoring independent result cards with a clear
+				// margin. When Jev is configured, use it as the final decision
+				// gate immediately instead of spending the remaining per-title
+				// deadline on redundant search variants.
+				if s.jevCatalogGateEnabled() || candidateHasTrustedEvidence(id, merged) {
+					logging.Infof("[scrape] strong web candidate %s selected; sending to Jev/final gate without extra query variants", id)
+					return s.finalizeCatalogCandidate(ctx, title, id, merged)
+				}
 			}
-			if catalogComparable(id) == catalogComparable(directID) && len(candidateTrustedSources(id, merged)) >= 2 {
+			if directOK && catalogComparable(id) == catalogComparable(directID) && len(candidateTrustedSources(id, merged)) >= 2 {
 				logging.Infof("[scrape] direct title candidate %s corroborated by %d trusted source families", id, len(candidateTrustedSources(id, merged)))
 				return s.finalizeCatalogCandidate(ctx, title, id, merged)
 			}
