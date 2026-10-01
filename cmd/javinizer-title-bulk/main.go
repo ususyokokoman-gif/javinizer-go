@@ -48,9 +48,16 @@ type resultRecord struct {
 	ElapsedMS  int64   `json:"elapsed_ms"`
 }
 
-type workResult struct {
-	Index int
-	Row   resultRecord
+type titleWork struct {
+	Title   string
+	Indices []int
+}
+
+type titleWorkResult struct {
+	TaskIndex int
+	CatalogID string
+	Error     string
+	ElapsedMS int64
 }
 
 func main() {
@@ -121,47 +128,47 @@ func main() {
 	resolver := scrape.NewTitleCatalogResolver(cfg)
 
 	started := time.Now()
+	tasks := buildTitleWork(unique)
+	fmt.Printf("TITLES_UNIQUE=%d\n", len(tasks))
+
 	rows := make([]resultRecord, len(unique))
 	jobs := make(chan int)
-	results := make(chan workResult, *workers*2)
+	results := make(chan titleWorkResult, *workers*2)
 	var accepted atomic.Int64
 	var failed atomic.Int64
 
+	workerCount := *workers
+	if workerCount > len(tasks) {
+		workerCount = len(tasks)
+	}
+
 	var wg sync.WaitGroup
-	for i := 0; i < *workers; i++ {
+	for i := 0; i < workerCount; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for idx := range jobs {
-				item := unique[idx]
-				title := titleFromPath(item.Path)
+			for taskIndex := range jobs {
+				task := tasks[taskIndex]
 				began := time.Now()
 				ctx, cancel := context.WithTimeout(context.Background(), *timeout)
-				id, err := resolver.Resolve(ctx, title)
+				id, err := resolver.Resolve(ctx, task.Title)
 				cancel()
 
-				row := resultRecord{
-					Path:      item.Path,
-					Filename:  filepath.Base(item.Path),
-					Title:     title,
+				result := titleWorkResult{
+					TaskIndex: taskIndex,
+					CatalogID: id,
 					ElapsedMS: time.Since(began).Milliseconds(),
 				}
 				if err != nil {
-					row.Status = "error"
-					row.Error = err.Error()
-					failed.Add(1)
-				} else {
-					row.Status = "accepted"
-					row.CatalogID = id
-					accepted.Add(1)
+					result.Error = err.Error()
 				}
-				results <- workResult{Index: idx, Row: row}
+				results <- result
 			}
 		}()
 	}
 
 	go func() {
-		for i := range unique {
+		for i := range tasks {
 			jobs <- i
 		}
 		close(jobs)
@@ -169,15 +176,42 @@ func main() {
 		close(results)
 	}()
 
-	done := 0
+	doneFiles := 0
+	lastReported := 0
 	for res := range results {
-		rows[res.Index] = res.Row
-		done++
-		if done%25 == 0 || done == len(unique) {
+		task := tasks[res.TaskIndex]
+		groupSize := len(task.Indices)
+		for _, fileIndex := range task.Indices {
+			item := unique[fileIndex]
+			row := resultRecord{
+				Path:      item.Path,
+				Filename:  filepath.Base(item.Path),
+				Title:     task.Title,
+				ElapsedMS: res.ElapsedMS,
+			}
+			if res.Error != "" {
+				row.Status = "error"
+				row.Error = res.Error
+			} else {
+				row.Status = "accepted"
+				row.CatalogID = res.CatalogID
+			}
+			rows[fileIndex] = row
+		}
+
+		if res.Error != "" {
+			failed.Add(int64(groupSize))
+		} else {
+			accepted.Add(int64(groupSize))
+		}
+
+		doneFiles += groupSize
+		if doneFiles-lastReported >= 25 || doneFiles == len(unique) {
 			elapsed := time.Since(started).Seconds()
-			rate := float64(done) / elapsed
+			rate := float64(doneFiles) / elapsed
 			fmt.Printf("PROGRESS=%d/%d ACCEPTED=%d ERRORS=%d RATE=%.2f_files_per_sec\n",
-				done, len(unique), accepted.Load(), failed.Load(), rate)
+				doneFiles, len(unique), accepted.Load(), failed.Load(), rate)
+			lastReported = doneFiles
 		}
 	}
 
@@ -188,8 +222,8 @@ func main() {
 	elapsed := time.Since(started)
 	rate := float64(len(rows)) / elapsed.Seconds()
 	summary := fmt.Sprintf(
-		"status=PASS\ninput_root=%s\nfiles_total=%d\nduplicates_confirmed=%d\nfiles_judged=%d\naccepted=%d\nerrors=%d\nworkers=%d\nelapsed_seconds=%.2f\nfiles_per_second=%.3f\n",
-		absRoot, len(files), len(duplicates), len(rows), accepted.Load(), failed.Load(), *workers, elapsed.Seconds(), rate,
+		"status=PASS\ninput_root=%s\nfiles_total=%d\nduplicates_confirmed=%d\nfiles_judged=%d\ntitles_unique=%d\naccepted=%d\nerrors=%d\nworkers=%d\nworkers_used=%d\nelapsed_seconds=%.2f\nfiles_per_second=%.3f\n",
+		absRoot, len(files), len(duplicates), len(rows), len(tasks), accepted.Load(), failed.Load(), *workers, workerCount, elapsed.Seconds(), rate,
 	)
 	if err := os.WriteFile(filepath.Join(absOut, "summary.txt"), []byte(summary), 0o644); err != nil {
 		fatalf("write summary: %v", err)
@@ -220,6 +254,24 @@ func titleFromPath(path string) string {
 	base := filepath.Base(path)
 	ext := filepath.Ext(base)
 	return strings.TrimSpace(strings.TrimSuffix(base, ext))
+}
+
+func buildTitleWork(files []fileItem) []titleWork {
+	indexByTitle := make(map[string]int, len(files))
+	tasks := make([]titleWork, 0, len(files))
+	for i, file := range files {
+		title := titleFromPath(file.Path)
+		if taskIndex, ok := indexByTitle[title]; ok {
+			tasks[taskIndex].Indices = append(tasks[taskIndex].Indices, i)
+			continue
+		}
+		indexByTitle[title] = len(tasks)
+		tasks = append(tasks, titleWork{
+			Title:   title,
+			Indices: []int{i},
+		})
+	}
+	return tasks
 }
 
 func removeExactDuplicates(files []fileItem, quickBytes int64) ([]fileItem, []duplicateRecord, error) {
