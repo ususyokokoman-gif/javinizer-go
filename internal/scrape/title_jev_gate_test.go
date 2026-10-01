@@ -192,3 +192,72 @@ func TestJevCatalogGateEnabledWithoutKeyFailsClosed(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestJevCatalogGateBorderlineUsesMedianOfThree(t *testing.T) {
+	probabilities := []string{"0.78", "0.86", "0.84"}
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls >= len(probabilities) {
+			t.Fatalf("unexpected Jev call %d", calls+1)
+		}
+		p := probabilities[calls]
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"jev-test","answers":{"catalog_id_correct":{"type":"noul","noul":` + p + `}}}`))
+	}))
+	defer server.Close()
+
+	s := &Scraper{
+		httpClient: server.Client(),
+		cfg: &Config{
+			JevCatalogEnabled:   true,
+			JevCatalogAPIKey:    "test-key",
+			JevCatalogThreshold: 0.80,
+			JevCatalogModel:     "jev-test",
+			JevCatalogEndpoint:  server.URL,
+		},
+	}
+
+	got, err := s.finalizeCatalogCandidate(context.Background(), "わたし、犯されにゆきます。～弟想いの美しき姉編～", "SNIS-323", nil)
+	if err != nil {
+		t.Fatalf("borderline median vote returned error: %v", err)
+	}
+	if got != "SNIS-323" {
+		t.Fatalf("resolved ID=%q, want SNIS-323", got)
+	}
+	if calls != 3 {
+		t.Fatalf("Jev calls=%d, want 3", calls)
+	}
+}
+
+func TestJevCatalogGateClearRejectDoesNotRetry(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"jev-test","answers":{"catalog_id_correct":{"type":"noul","noul":0.69}}}`))
+	}))
+	defer server.Close()
+
+	s := &Scraper{
+		httpClient: server.Client(),
+		cfg: &Config{
+			JevCatalogEnabled:   true,
+			JevCatalogAPIKey:    "test-key",
+			JevCatalogThreshold: 0.80,
+			JevCatalogModel:     "jev-test",
+			JevCatalogEndpoint:  server.URL,
+		},
+	}
+
+	_, err := s.finalizeCatalogCandidate(context.Background(), "作品タイトル", "SSIS-001", nil)
+	if err == nil {
+		t.Fatal("expected clear Jev rejection")
+	}
+	if !strings.Contains(err.Error(), "below threshold 0.800") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("Jev calls=%d, want 1 for clear reject", calls)
+	}
+}
