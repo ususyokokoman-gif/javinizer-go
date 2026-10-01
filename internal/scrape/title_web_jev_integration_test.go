@@ -114,3 +114,67 @@ func TestLookupCatalogIDOnWebRejectsWhenJevBelowThreshold(t *testing.T) {
 		t.Fatal("Web-selected candidate bypassed Jev validation")
 	}
 }
+
+func TestLookupCatalogIDOnWebJevStopsAfterStrongRepeatedWebCandidate(t *testing.T) {
+	title := "狙われた通学路 共謀痴漢電車 桃乃木かな"
+	ddgHTML := `<html><body>
+	<div class="result">
+	  <a class="result__a" href="https://example.com/a">狙われた通学路 共謀痴漢電車 桃乃木かな IPX-072</a>
+	  <div class="result__snippet">狙われた通学路 共謀痴漢電車 桃乃木かな 品番 IPX-072</div>
+	</div>
+	<div class="result">
+	  <a class="result__a" href="https://example.net/b">狙われた通学路 共謀痴漢電車 桃乃木かな IPX-072</a>
+	  <div class="result__snippet">同一作品 IPX-072 狙われた通学路 共謀痴漢電車 桃乃木かな</div>
+	</div>
+	</body></html>`
+
+	sawJev := false
+	ddgCalls := 0
+	lateProviderCalls := 0
+	client := jevLookupHTTPClientFunc(func(req *http.Request) (*http.Response, error) {
+		host := strings.ToLower(req.URL.Hostname())
+		switch {
+		case host == "www.google.com":
+			return jevLookupResponse(http.StatusNotFound, ""), nil
+		case strings.Contains(host, "duckduckgo.com"):
+			ddgCalls++
+			return jevLookupResponse(http.StatusOK, ddgHTML), nil
+		case host == "search.yahoo.co.jp" || host == "www.bing.com":
+			lateProviderCalls++
+			return jevLookupResponse(http.StatusInternalServerError, ""), nil
+		case host == "127.0.0.1" && req.URL.Path == "/v1/systemone":
+			sawJev = true
+			return jevLookupResponse(http.StatusOK, `{"model":"jev-test","answers":{"catalog_id_correct":{"type":"noul","noul":0.90}}}`), nil
+		default:
+			return jevLookupResponse(http.StatusNotFound, ""), nil
+		}
+	})
+
+	s := &Scraper{
+		httpClient: client,
+		cfg: &Config{
+			JevCatalogEnabled:   true,
+			JevCatalogAPIKey:    "test-key",
+			JevCatalogThreshold: 0.80,
+			JevCatalogModel:     "jev-test",
+			JevCatalogEndpoint:  "http://127.0.0.1:7777/v1/systemone",
+		},
+	}
+
+	got, err := s.lookupCatalogIDOnWeb(context.Background(), title)
+	if err != nil {
+		t.Fatalf("lookupCatalogIDOnWeb returned error: %v", err)
+	}
+	if got != "IPX-072" {
+		t.Fatalf("resolved catalog ID=%q, want IPX-072", got)
+	}
+	if !sawJev {
+		t.Fatal("strong repeated Web candidate bypassed Jev")
+	}
+	if ddgCalls != 1 {
+		t.Fatalf("DuckDuckGo calls=%d, want 1", ddgCalls)
+	}
+	if lateProviderCalls != 0 {
+		t.Fatalf("late fallback provider calls=%d, want 0", lateProviderCalls)
+	}
+}
