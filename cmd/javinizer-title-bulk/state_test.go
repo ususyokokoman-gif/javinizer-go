@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -96,6 +97,12 @@ func TestStateCheckpointAndTerminalCache(t *testing.T) {
 	if err := store.recordTask(task, files, "accepted", "ABC-123", "", 2); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("state should not be rewritten before checkpoint, stat err=%v", err)
+	}
+	if err := store.checkpoint(); err != nil {
+		t.Fatal(err)
+	}
 
 	reloaded, err := newStateStore(path, true)
 	if err != nil {
@@ -119,6 +126,9 @@ func TestTransientErrorIsNotTerminalCache(t *testing.T) {
 	files := []fileItem{{Path: "movie.mp4", Size: 123, ModTimeNS: 456}}
 	task := titleWork{Title: "作品タイトル", Indices: []int{0}}
 	if err := store.recordTask(task, files, "error", "", "HTTP 429", 3); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.checkpoint(); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := store.cachedTitle("作品タイトル"); ok {
