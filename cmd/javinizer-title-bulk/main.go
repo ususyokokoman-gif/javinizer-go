@@ -79,8 +79,21 @@ func main() {
 		retryBase   = flag.Duration("retry-base-delay", 2*time.Second, "Base delay for transient retry backoff")
 		r18Dump     = flag.String("r18-dump", "", "Local r18.dev dump path (default: JAVINIZER user config directory)")
 		noLocalDB   = flag.Bool("no-local-title-db", false, "Disable local r18.dev title lookup and use web fallback only")
+		prepareDB   = flag.Bool("prepare-title-db", false, "Prepare/update the local r18.dev title database and exit")
 	)
 	flag.Parse()
+
+	if *prepareDB {
+		db, err := prepareLocalTitleLookup(context.Background(), *r18Dump)
+		if err != nil {
+			fatalf("prepare local title database: %v", err)
+		}
+		if db != nil {
+			_ = db.Close()
+		}
+		fmt.Println("TITLE_DB_PREPARE=PASS")
+		return
+	}
 
 	if strings.TrimSpace(*root) == "" {
 		// Double-click / no-argument startup is the normal end-user path.
