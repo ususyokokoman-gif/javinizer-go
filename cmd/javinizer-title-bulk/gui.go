@@ -144,7 +144,9 @@ func (a *guiApp) Start(root, outDir, apiKey string) guiRunResult {
 		"-root", root,
 		"-out", outDir,
 		"-workers", "4",
-		"-timeout", "180s",
+		"-timeout", "45s",
+		"-max-attempts", "2",
+		"-retry-base-delay", "1s",
 	)
 	cmd.Env = append(os.Environ(), "TYPESAFE_API_KEY="+apiKey)
 	hideCommandWindow(cmd)
