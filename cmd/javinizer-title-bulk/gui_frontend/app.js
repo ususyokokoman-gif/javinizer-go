@@ -13,13 +13,21 @@ function appendLog(line) {
 
 function handleProgress(line) {
   appendLog(line);
-  if (line === "DUPLICATE_SCAN=START") {
-    status.textContent = "重複ファイルを確認中…";
+  if (line.startsWith("TITLE_DB=FIRST_RUN_DOWNLOAD")) {
+    status.textContent = "初回のみ：高速タイトルDBを取得中…";
+  } else if (line.startsWith("TITLE_DB_DOWNLOAD=") || line.startsWith("TITLE_DB_DOWNLOAD_BYTES=")) {
+    status.textContent = "高速タイトルDBをダウンロード中…";
+  } else if (line.startsWith("TITLE_DB_IMPORT=START")) {
+    status.textContent = "高速タイトルDBを作成中…";
+  } else if (line.startsWith("TITLE_DB_INDEX_READY") || line.startsWith("TITLE_DB=READY")) {
+    status.textContent = "高速タイトル検索を準備しました。";
+  } else if (line.startsWith("TITLE_RESOLUTION=LOCAL_R18")) {
+    status.textContent = "ローカルタイトル検索＋Jevで判定中…";
   } else if (line.startsWith("TITLES_UNIQUE=")) {
-    status.textContent = "作品を検索・判定中…";
+    status.textContent = "タイトルから品番を検索中…";
   } else if (line.startsWith("PROGRESS=")) {
     const m = line.match(/PROGRESS=(\d+)\/(\d+)/);
-    if (m) status.textContent = `処理中… ${m[1]} / ${m[2]}`;
+    if (m) status.textContent = `タイトル検索中… ${m[1]} / ${m[2]}`;
   } else if (line === "完了しました。") {
     status.textContent = "完了しました。";
   } else if (line === "キャンセルしました。") {
