@@ -9,7 +9,11 @@ import (
 	"github.com/javinizer/javinizer-go/internal/models"
 )
 
-func buildTitleSearchIndex(context.Context, *sql.Tx) error { return nil }
+func buildTitleSearchIndex(context.Context, *sql.DB) error { return nil }
+
+func EnsureTitleSearchIndex(context.Context, string) error {
+	return models.ErrDumpTitleSearchUnavailable
+}
 
 func (s *Store) SearchByTitle(context.Context, string, int) ([]models.DumpTitleMatch, error) {
 	return nil, models.ErrDumpTitleSearchUnavailable
