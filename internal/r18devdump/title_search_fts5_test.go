@@ -6,6 +6,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"github.com/javinizer/javinizer-go/internal/models"
 )
 
 func TestSearchByTitleFindsJapaneseTitleWithActressSuffix(t *testing.T) {
@@ -65,5 +67,29 @@ func TestSearchByTitleStripsCommonFilenamePrefix(t *testing.T) {
 	}
 	if len(got) == 0 || got[0].DVDID != "SSIS-001" {
 		t.Fatalf("matches=%+v, want SSIS-001 first", got)
+	}
+}
+
+
+func TestTitleSimilarityTreatsCensorMarkerAsWildcard(t *testing.T) {
+	got := titleSimilarity(
+		"今日、あなたの上司に犯されました。 大橋未久",
+		"今日、あなたの上司に犯●れました。 大橋未久",
+	)
+	if got < 0.95 {
+		t.Fatalf("score=%.3f, want >= 0.95", got)
+	}
+}
+
+func TestDedupeTitleMatchesPrefersStandardDisplayID(t *testing.T) {
+	got := dedupeTitleMatchesByDisplayID([]models.DumpTitleMatch{
+		{ContentID: "4ipz508", DVDID: "4IPZ508", TitleJa: "作品", Score: 0.90},
+		{ContentID: "ipz00508", DVDID: "IPZ-508", TitleJa: "作品", Score: 0.90},
+	})
+	if len(got) != 1 {
+		t.Fatalf("len=%d, want 1: %+v", len(got), got)
+	}
+	if got[0].DVDID != "IPZ-508" {
+		t.Fatalf("DVDID=%q, want IPZ-508", got[0].DVDID)
 	}
 }
