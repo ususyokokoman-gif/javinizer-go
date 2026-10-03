@@ -1,0 +1,33 @@
+name: JAVINIZER Fast Title Search Tests
+
+on:
+  push:
+    branches:
+      - feature/keepwords
+    paths:
+      - 'internal/r18devdump/**'
+      - 'internal/scrape/**'
+      - 'internal/models/r18dev_dump.go'
+      - 'cmd/javinizer-title-bulk/**'
+      - '.github/workflows/javinizer-title-fast-test.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fast-title-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Test local FTS5 title search
+        run: go test -tags 'sqlite_fts5' ./internal/r18devdump -run 'TestSearchByTitle' -count=1 -v
+      - name: Test local title to Jev path
+        run: go test -tags 'sqlite_fts5' ./internal/scrape -run 'TestTitleCatalogResolverUsesLocalTitleThenJevWithoutWeb|TestTitleCatalogResolverSkipsWeakLocalCandidate' -count=1 -v
+      - name: Compile title bulk tests
+        run: go test -tags 'sqlite_fts5' ./cmd/javinizer-title-bulk -count=1
