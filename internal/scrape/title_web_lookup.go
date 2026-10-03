@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/PuerkitoBio/goquery"
 	"github.com/javinizer/javinizer-go/internal/logging"
@@ -126,10 +127,15 @@ func (s *Scraper) tryJevFastTitlePath(ctx context.Context, title, query string) 
 		return "", false, nil
 	}
 
+	// Keep the System-One fast lane genuinely fast. If search + Jev cannot
+	// complete inside this small budget, fall back to the normal evidence path.
+	fastCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+
 	// DuckDuckGo's HTML endpoint is deliberately used before Google here because
 	// it is a plain HTTP request and never launches the expensive headless-browser
 	// fallback. Jev is the mandatory acceptance gate for this lower-cost path.
-	results, err := s.fetchDuckDuckGoTitleSearch(ctx, query)
+	results, err := s.fetchDuckDuckGoTitleSearch(fastCtx, query)
 	if err != nil {
 		return "", false, err
 	}
@@ -140,7 +146,7 @@ func (s *Scraper) tryJevFastTitlePath(ctx context.Context, title, query string) 
 	}
 
 	logging.Infof("[scrape] Jev fast path candidate=%s from DuckDuckGo; validating immediately", id)
-	validated, err := s.finalizeCatalogCandidate(ctx, title, id, results)
+	validated, err := s.finalizeCatalogCandidate(fastCtx, title, id, results)
 	if err != nil {
 		logging.Infof("[scrape] Jev fast path candidate=%s not accepted: %v", id, err)
 		return "", false, err
