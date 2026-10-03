@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"sync"
 
@@ -164,10 +165,14 @@ func (a *guiApp) Start(root, outDir, apiKey string) guiRunResult {
 	a.mu.Unlock()
 	defer cancel()
 
+	workerCount := "4"
+	if goruntime.GOOS == "darwin" {
+		workerCount = "8"
+	}
 	cmd := exec.CommandContext(runCtx, exe,
 		"-root", root,
 		"-out", outDir,
-		"-workers", "4",
+		"-workers", workerCount,
 		"-timeout", "45s",
 		"-max-attempts", "2",
 		"-retry-base-delay", "1s",
