@@ -134,6 +134,7 @@ func main() {
 	fmt.Printf("STATE_FILE=%s\n", resolvedStatePath)
 	fmt.Printf("RESUME=%t\n", *resume)
 
+	scanStarted := time.Now()
 	files, err := scanMedia(absRoot)
 	if err != nil {
 		fatalf("scan media: %v", err)
@@ -142,10 +143,12 @@ func main() {
 		fatalf("no media files found under %s", absRoot)
 	}
 	fmt.Printf("FILES_TOTAL=%d\n", len(files))
+	fmt.Printf("MEDIA_SCAN_SECONDS=%.2f\n", time.Since(scanStarted).Seconds())
 
 	duplicates := []duplicateRecord{}
 	unique := files
 	if !*skipDup {
+		dupStarted := time.Now()
 		fmt.Println("DUPLICATE_SCAN=START")
 		unique, duplicates, err = removeExactDuplicates(files, *quickBytes)
 		if err != nil {
@@ -153,6 +156,7 @@ func main() {
 		}
 		fmt.Printf("DUPLICATES_CONFIRMED=%d\n", len(duplicates))
 		fmt.Printf("FILES_TO_JUDGE=%d\n", len(unique))
+		fmt.Printf("DUPLICATE_SCAN_SECONDS=%.2f\n", time.Since(dupStarted).Seconds())
 		if err := writeDuplicates(absOut, duplicates); err != nil {
 			fatalf("write duplicate report: %v", err)
 		}
@@ -207,9 +211,6 @@ func main() {
 			rejected.Add(int64(groupSize))
 		}
 		cachedFiles.Add(int64(groupSize))
-		if err := store.recordTask(task, unique, cached.Status, cached.CatalogID, cached.Error, cached.Attempts); err != nil {
-			fatalf("checkpoint cached state: %v", err)
-		}
 	}
 	fmt.Printf("TITLES_CACHED=%d\n", cachedTitles)
 	fmt.Printf("FILES_CACHED=%d\n", cachedFiles.Load())
@@ -253,6 +254,9 @@ func main() {
 
 	doneFiles := int(cachedFiles.Load())
 	lastReported := doneFiles
+	const checkpointEvery = 25
+	pendingCheckpoint := 0
+	lastCheckpoint := time.Now()
 	if doneFiles > 0 {
 		fmt.Printf("PROGRESS=%d/%d ACCEPTED=%d REJECTED=%d ERRORS=%d CACHED=%d\n",
 			doneFiles, len(unique), accepted.Load(), rejected.Load(), failed.Load(), cachedFiles.Load())
@@ -284,7 +288,15 @@ func main() {
 			failed.Add(int64(groupSize))
 		}
 		if err := store.recordTask(task, unique, res.Status, res.CatalogID, res.Error, res.Attempts); err != nil {
-			fatalf("checkpoint state: %v", err)
+			fatalf("record state: %v", err)
+		}
+		pendingCheckpoint++
+		if pendingCheckpoint >= checkpointEvery || time.Since(lastCheckpoint) >= 2*time.Second {
+			if err := store.checkpoint(); err != nil {
+				fatalf("checkpoint state: %v", err)
+			}
+			pendingCheckpoint = 0
+			lastCheckpoint = time.Now()
 		}
 
 		doneFiles += groupSize
@@ -297,6 +309,9 @@ func main() {
 		}
 	}
 
+	if err := store.checkpoint(); err != nil {
+		fatalf("final checkpoint state: %v", err)
+	}
 	if err := writeResults(absOut, rows); err != nil {
 		fatalf("write results: %v", err)
 	}
@@ -304,8 +319,8 @@ func main() {
 	elapsed := time.Since(started)
 	rate := float64(len(rows)) / elapsed.Seconds()
 	summary := fmt.Sprintf(
-		"status=PASS\ninput_root=%s\nstate_file=%s\nresume=%t\nfiles_total=%d\nduplicates_confirmed=%d\nfiles_judged=%d\ntitles_unique=%d\ntitles_cached=%d\ntitles_resolved_live=%d\naccepted=%d\nrejected=%d\nerrors=%d\ncached_files=%d\nworkers=%d\nworkers_used=%d\nmax_attempts=%d\nretry_base_delay=%s\nelapsed_seconds=%.2f\nfiles_per_second=%.3f\n",
-		absRoot, resolvedStatePath, *resume, len(files), len(duplicates), len(rows), len(tasks), cachedTitles, len(pending), accepted.Load(), rejected.Load(), failed.Load(), cachedFiles.Load(), *workers, workerCount, *maxAttempts, retryBase.String(), elapsed.Seconds(), rate,
+		"status=PASS\ninput_root=%s\nstate_file=%s\nresume=%t\nfiles_total=%d\nduplicates_confirmed=%d\nfiles_judged=%d\ntitles_unique=%d\ntitles_cached=%d\ntitles_resolved_live=%d\naccepted=%d\nrejected=%d\nerrors=%d\ncached_files=%d\nworkers=%d\nworkers_used=%d\nmax_attempts=%d\nretry_base_delay=%s\nstate_checkpoint_every=%d\nelapsed_seconds=%.2f\nfiles_per_second=%.3f\n",
+		absRoot, resolvedStatePath, *resume, len(files), len(duplicates), len(rows), len(tasks), cachedTitles, len(pending), accepted.Load(), rejected.Load(), failed.Load(), cachedFiles.Load(), *workers, workerCount, *maxAttempts, retryBase.String(), checkpointEvery, elapsed.Seconds(), rate,
 	)
 	if err := os.WriteFile(filepath.Join(absOut, "summary.txt"), []byte(summary), 0o644); err != nil {
 		fatalf("write summary: %v", err)
