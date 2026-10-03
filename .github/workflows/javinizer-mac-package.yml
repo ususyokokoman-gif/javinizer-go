@@ -42,10 +42,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p dist/JAVINIZER.app/Contents/MacOS
+          mkdir -p dist/package/JAVINIZER.app/Contents/MacOS
           export CGO_LDFLAGS="-framework UniformTypeIdentifiers"
-          GOARCH=arm64 go build -trimpath -tags 'desktop,production' -o dist/JAVINIZER.app/Contents/MacOS/JAVINIZER ./cmd/javinizer-title-bulk
-          cat > dist/JAVINIZER.app/Contents/Info.plist <<'PLIST'
+          GOARCH=arm64 go build -trimpath -tags 'desktop,production' -o dist/package/JAVINIZER.app/Contents/MacOS/JAVINIZER ./cmd/javinizer-title-bulk
+          cat > dist/package/JAVINIZER.app/Contents/Info.plist <<'PLIST'
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0">
@@ -62,13 +62,13 @@ jobs:
           </dict>
           </plist>
           PLIST
-          chmod +x dist/JAVINIZER.app/Contents/MacOS/JAVINIZER
-          codesign --force --deep --sign - dist/JAVINIZER.app
-          file dist/JAVINIZER.app/Contents/MacOS/JAVINIZER
+          chmod +x dist/package/JAVINIZER.app/Contents/MacOS/JAVINIZER
+          codesign --force --deep --sign - dist/package/JAVINIZER.app
+          file dist/package/JAVINIZER.app/Contents/MacOS/JAVINIZER
 
       - uses: actions/upload-artifact@v4
         with:
           name: JAVINIZER-Mac-AppleSilicon
-          path: dist/JAVINIZER.app
+          path: dist/package
           if-no-files-found: error
           retention-days: 14
