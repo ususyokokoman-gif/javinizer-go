@@ -42,8 +42,10 @@ type guiRunResult struct {
 }
 
 type guiApp struct {
-	ctx context.Context
-	mu  sync.Mutex
+	ctx     context.Context
+	mu      sync.Mutex
+	cancel  context.CancelFunc
+	running bool
 }
 
 func runGUI() error {
@@ -59,13 +61,18 @@ func runGUI() error {
 		AssetServer: &assetserver.Options{
 			Assets: frontend,
 		},
-		OnStartup: app.startup,
-		Bind: []interface{}{app},
+		OnStartup:  app.startup,
+		OnShutdown: app.shutdown,
+		Bind:      []interface{}{app},
 	})
 }
 
 func (a *guiApp) startup(ctx context.Context) {
 	a.ctx = ctx
+}
+
+func (a *guiApp) shutdown(ctx context.Context) {
+	a.Cancel()
 }
 
 func (a *guiApp) SelectMediaFolder() (string, error) {
@@ -95,7 +102,18 @@ func (a *guiApp) GetSettings() guiSettingsView {
 
 func (a *guiApp) Start(root, outDir, apiKey string) guiRunResult {
 	a.mu.Lock()
-	defer a.mu.Unlock()
+	if a.running {
+		a.mu.Unlock()
+		return guiRunResult{Message: "すでに処理中です。"}
+	}
+	a.running = true
+	a.mu.Unlock()
+	defer func() {
+		a.mu.Lock()
+		a.running = false
+		a.cancel = nil
+		a.mu.Unlock()
+	}()
 
 	root = strings.TrimSpace(root)
 	if root == "" {
@@ -140,7 +158,13 @@ func (a *guiApp) Start(root, outDir, apiKey string) guiRunResult {
 	if err != nil {
 		return guiRunResult{Message: fmt.Sprintf("実行ファイルを確認できません: %v", err)}
 	}
-	cmd := exec.Command(exe,
+	runCtx, cancel := context.WithCancel(a.ctx)
+	a.mu.Lock()
+	a.cancel = cancel
+	a.mu.Unlock()
+	defer cancel()
+
+	cmd := exec.CommandContext(runCtx, exe,
 		"-root", root,
 		"-out", outDir,
 		"-workers", "4",
@@ -170,11 +194,28 @@ func (a *guiApp) Start(root, outDir, apiKey string) guiRunResult {
 	err = cmd.Wait()
 	wg.Wait()
 	if err != nil {
+		if runCtx.Err() == context.Canceled {
+			runtime.EventsEmit(a.ctx, "bulk-progress", "キャンセルしました。")
+			return guiRunResult{Message: "キャンセルしました。", OutputDir: outDir}
+		}
 		runtime.EventsEmit(a.ctx, "bulk-progress", "処理中にエラーが発生しました。")
 		return guiRunResult{Message: fmt.Sprintf("処理に失敗しました: %v", err), OutputDir: outDir}
 	}
 	runtime.EventsEmit(a.ctx, "bulk-progress", "完了しました。")
 	return guiRunResult{Success: true, Message: "処理が完了しました。", OutputDir: outDir}
+}
+
+
+func (a *guiApp) Cancel() bool {
+	a.mu.Lock()
+	cancel := a.cancel
+	running := a.running
+	a.mu.Unlock()
+	if running && cancel != nil {
+		cancel()
+		return true
+	}
+	return false
 }
 
 func (a *guiApp) forwardOutput(wg *sync.WaitGroup, r io.Reader, isErr bool) {
