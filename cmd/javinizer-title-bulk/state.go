@@ -48,6 +48,7 @@ type stateStore struct {
 	mu    sync.Mutex
 	path  string
 	state persistentState
+	dirty bool
 }
 
 func emptyPersistentState() persistentState {
@@ -151,14 +152,31 @@ func (s *stateStore) recordTask(task titleWork, files []fileItem, status, catalo
 			UpdatedAt: now,
 		}
 	}
-	return writePersistentState(s.path, s.state)
+	s.dirty = true
+	return nil
+}
+
+func (s *stateStore) checkpoint() error {
+	if s == nil {
+		return fmt.Errorf("state store is nil")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.dirty {
+		return nil
+	}
+	if err := writePersistentState(s.path, s.state); err != nil {
+		return err
+	}
+	s.dirty = false
+	return nil
 }
 
 func writePersistentState(path string, st persistentState) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("create state directory: %w", err)
 	}
-	raw, err := json.MarshalIndent(st, "", "  ")
+	raw, err := json.Marshal(st)
 	if err != nil {
 		return fmt.Errorf("marshal state: %w", err)
 	}
