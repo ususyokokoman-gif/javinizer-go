@@ -105,13 +105,27 @@ func (r *TitleCatalogResolver) resolveFromLocalTitle(ctx context.Context, title 
 		logging.Infof("[scrape] local title lookup not decisive title=%q top_score=%.3f", truncateRunes(title, 100), top.Score)
 		return "", false
 	}
+	margin := 1.0
 	if len(matches) > 1 {
-		margin := top.Score - matches[1].Score
-		// Very close lexical candidates should be corroborated by the web
-		// rather than forcing Jev to decide from an underdetermined local set.
-		if margin < 0.025 && top.Score < 0.97 {
+		margin = top.Score - matches[1].Score
+		// Distinct IDs with effectively the same lexical score are genuinely
+		// ambiguous even when both titles look exact. Do not pick one by sort
+		// order.
+		if margin < 0.025 {
 			logging.Infof("[scrape] local title lookup ambiguous top=%s score=%.3f second=%s score=%.3f", top.DVDID, top.Score, matches[1].DVDID, matches[1].Score)
 			return "", false
+		}
+	}
+
+	// Deterministic code outranks an external model. A strong unique match in
+	// the local canonical dump is accepted immediately; Jev is reserved for
+	// medium-confidence candidates. This removes network latency for the common
+	// case and avoids Jev under-scoring r18.dev's intentionally censored titles.
+	if top.Score >= 0.90 && margin >= 0.05 {
+		id := normalizeWebCatalogCandidate(top.DVDID)
+		if id != "" {
+			logging.Infof("[scrape] local title deterministic accept candidate=%s score=%.3f margin=%.3f; web and Jev skipped", id, top.Score, margin)
+			return id, true
 		}
 	}
 
