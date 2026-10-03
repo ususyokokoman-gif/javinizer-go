@@ -1,0 +1,72 @@
+name: JAVINIZER Mac Package
+
+on:
+  push:
+    branches:
+      - feature/keepwords
+    paths:
+      - '.github/workflows/javinizer-mac-package.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-mac:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Verify source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "3f657cd97768fe73019a1b90a7c3b3148de8b2e6"
+
+      - name: Test
+        shell: bash
+        run: |
+          set -euo pipefail
+          go test ./internal/scrape -run '^(TestChooseJevFastCandidate|TestTitleCatalogResolverBypassesNetworkForEmbeddedCatalogID|TestJevCatalogGate|TestLookupCatalogIDOnWeb)' -count=1
+          go test ./cmd/javinizer-title-bulk -count=1
+
+      - name: Build Apple Silicon app
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist/JAVINIZER.app/Contents/MacOS
+          export CGO_LDFLAGS="-framework UniformTypeIdentifiers"
+          GOARCH=arm64 go build -trimpath -tags 'desktop,production' -o dist/JAVINIZER.app/Contents/MacOS/JAVINIZER ./cmd/javinizer-title-bulk
+          cat > dist/JAVINIZER.app/Contents/Info.plist <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleName</key><string>JAVINIZER</string>
+            <key>CFBundleDisplayName</key><string>JAVINIZER</string>
+            <key>CFBundleIdentifier</key><string>jp.zun.javinizer.bulk</string>
+            <key>CFBundleVersion</key><string>1.0.0</string>
+            <key>CFBundleShortVersionString</key><string>1.0.0</string>
+            <key>CFBundleExecutable</key><string>JAVINIZER</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>LSMinimumSystemVersion</key><string>12.0</string>
+            <key>NSHighResolutionCapable</key><true/>
+          </dict>
+          </plist>
+          PLIST
+          chmod +x dist/JAVINIZER.app/Contents/MacOS/JAVINIZER
+          codesign --force --deep --sign - dist/JAVINIZER.app
+          file dist/JAVINIZER.app/Contents/MacOS/JAVINIZER
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: JAVINIZER-Mac-AppleSilicon
+          path: dist/JAVINIZER.app
+          if-no-files-found: error
+          retention-days: 14
