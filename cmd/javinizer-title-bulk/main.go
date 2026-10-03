@@ -80,6 +80,14 @@ func main() {
 	flag.Parse()
 
 	if strings.TrimSpace(*root) == "" {
+		// Double-click / no-argument startup is the normal end-user path.
+		// CLI behavior remains available when -root is supplied.
+		if len(os.Args) == 1 {
+			if err := runGUI(); err != nil {
+				fatalf("start GUI: %v", err)
+			}
+			return
+		}
 		fatalf("-root is required")
 	}
 	if *workers < 1 {
