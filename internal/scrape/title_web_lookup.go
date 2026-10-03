@@ -127,32 +127,57 @@ func (s *Scraper) tryJevFastTitlePath(ctx context.Context, title, query string) 
 		return "", false, nil
 	}
 
-	// Keep the System-One fast lane genuinely fast. If search + Jev cannot
-	// complete inside this small budget, fall back to the normal evidence path.
+	// Keep the System-One fast lane genuinely fast. The whole cheap-search +
+	// Jev stage gets one shared budget; only unresolved cases fall through to
+	// Google/headless-browser corroboration.
 	fastCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
 
-	// DuckDuckGo's HTML endpoint is deliberately used before Google here because
-	// it is a plain HTTP request and never launches the expensive headless-browser
-	// fallback. Jev is the mandatory acceptance gate for this lower-cost path.
-	results, err := s.fetchDuckDuckGoTitleSearch(fastCtx, query)
-	if err != nil {
-		return "", false, err
+	type fastProvider struct {
+		name  string
+		fetch func(context.Context, string) ([]titleWebSearchResult, error)
 	}
-	id, ok := chooseJevFastCandidate(title, results)
-	if !ok {
-		logging.Infof("[scrape] Jev fast path found no decisive candidate from DuckDuckGo")
-		return "", false, nil
+	providers := []fastProvider{
+		{name: "DuckDuckGo", fetch: s.fetchDuckDuckGoTitleSearch},
+		{name: "YahooJapan", fetch: s.fetchYahooJapanTitleSearch},
 	}
 
-	logging.Infof("[scrape] Jev fast path candidate=%s from DuckDuckGo; validating immediately", id)
-	validated, err := s.finalizeCatalogCandidate(fastCtx, title, id, results)
-	if err != nil {
-		logging.Infof("[scrape] Jev fast path candidate=%s not accepted: %v", id, err)
-		return "", false, err
+	var evidence []titleWebSearchResult
+	var lastErr error
+	for _, provider := range providers {
+		results, err := provider.fetch(fastCtx, query)
+		if err != nil {
+			lastErr = err
+			logging.Infof("[scrape] Jev fast path provider=%s unavailable: %v", provider.name, err)
+			if fastCtx.Err() != nil {
+				break
+			}
+			continue
+		}
+		evidence = mergeTitleWebResults(evidence, results)
+		id, ok := chooseJevFastCandidate(title, evidence)
+		if !ok {
+			logging.Infof("[scrape] Jev fast path provider=%s produced no decisive candidate yet", provider.name)
+			continue
+		}
+
+		logging.Infof("[scrape] Jev fast path candidate=%s after provider=%s; validating immediately", id, provider.name)
+		validated, validateErr := s.finalizeCatalogCandidate(fastCtx, title, id, evidence)
+		if validateErr == nil {
+			logging.Infof("[scrape] Jev fast path accepted candidate=%s; skipping deep web search", validated)
+			return validated, true, nil
+		}
+		lastErr = validateErr
+		logging.Infof("[scrape] Jev fast path candidate=%s not yet accepted after provider=%s: %v", id, provider.name, validateErr)
+		if fastCtx.Err() != nil {
+			break
+		}
 	}
-	logging.Infof("[scrape] Jev fast path accepted candidate=%s; skipping deep web search", validated)
-	return validated, true, nil
+
+	if fastCtx.Err() != nil && ctx.Err() == nil {
+		return "", false, fmt.Errorf("Jev fast path budget exhausted: %w", fastCtx.Err())
+	}
+	return "", false, lastErr
 }
 
 func chooseVerifiedDirectFallback(title, directID string, webEvidence []titleWebSearchResult) (string, error) {
