@@ -72,7 +72,7 @@ func main() {
 		workers    = flag.Int("workers", 4, "Concurrent unique-title -> Web -> Jev workers")
 		timeout    = flag.Duration("timeout", 45*time.Second, "Per-title timeout")
 		quickBytes  = flag.Int64("quick-hash-bytes", 64<<10, "Bytes sampled from head and tail for duplicate prefilter")
-		skipDup     = flag.Bool("skip-duplicates", false, "Skip duplicate detection")
+		skipDup     = flag.Bool("skip-duplicates", true, "Skip duplicate detection (set -skip-duplicates=false to enable)")
 		resume      = flag.Bool("resume", true, "Resume from durable title state and reuse terminal cached results")
 		statePath   = flag.String("state", "", "State file path (default: <out>/bulk-state.json)")
 		maxAttempts = flag.Int("max-attempts", 3, "Maximum attempts for transient title-resolution failures")
