@@ -56,5 +56,14 @@ func (r *TitleCatalogResolver) Resolve(ctx context.Context, title string) (strin
 	if ctx == nil {
 		ctx = context.Background()
 	}
+
+	// Deterministic first: when the filename/title already contains exactly one
+	// syntactically valid catalog ID, no web search or Jev call is needed.
+	// This is both faster and more reliable than asking an external service to
+	// rediscover information already present in the filename.
+	if ids := uniqueNormalizedCatalogIDs(extractCatalogCandidates(title)); len(ids) == 1 {
+		return ids[0], nil
+	}
+
 	return r.scraper.lookupCatalogIDOnWeb(ctx, title)
 }
