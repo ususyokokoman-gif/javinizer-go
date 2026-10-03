@@ -306,6 +306,13 @@ func Import(ctx context.Context, r io.Reader, path string, opts ImportOptions) (
 		return ImportResult{}, fmt.Errorf("commit: %w", err)
 	}
 
+	// Build the free-form title index once while the freshly imported database
+	// is still writable. With sqlite_fts5 this turns later title resolution into
+	// local trigram lookup; without that build tag this is a no-op.
+	if err := buildTitleSearchIndex(ctx, db); err != nil {
+		return ImportResult{}, fmt.Errorf("build title search index: %w", err)
+	}
+
 	if _, err := db.ExecContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
 		return ImportResult{}, fmt.Errorf("wal checkpoint: %w", err)
 	}
