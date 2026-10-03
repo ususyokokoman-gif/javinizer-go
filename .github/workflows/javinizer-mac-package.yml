@@ -8,6 +8,8 @@ on:
       - '.github/workflows/javinizer-mac-package.yml'
       - 'cmd/javinizer-title-bulk/**'
       - 'internal/scrape/**'
+      - 'internal/r18devdump/**'
+      - 'internal/models/r18dev_dump.go'
       - 'go.mod'
       - 'go.sum'
   workflow_dispatch:
@@ -35,8 +37,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          go test ./internal/scrape -run '^(TestChooseJevFastCandidate|TestTitleCatalogResolverBypassesNetworkForEmbeddedCatalogID|TestJevCatalogGate|TestLookupCatalogIDOnWeb)' -count=1
-          go test ./cmd/javinizer-title-bulk -count=1
+          go test -tags 'sqlite_fts5' ./internal/r18devdump -count=1
+          go test -tags 'sqlite_fts5' ./internal/scrape -run '^(TestChooseJevFastCandidate|TestTitleCatalogResolverBypassesNetworkForEmbeddedCatalogID|TestJevCatalogGate|TestLookupCatalogIDOnWeb)' -count=1
+          go test -tags 'sqlite_fts5' ./cmd/javinizer-title-bulk -count=1
 
       - name: Build Apple Silicon app
         shell: bash
@@ -44,7 +47,7 @@ jobs:
           set -euo pipefail
           mkdir -p dist/package/JAVINIZER.app/Contents/MacOS
           export CGO_LDFLAGS="-framework UniformTypeIdentifiers"
-          GOARCH=arm64 go build -trimpath -tags 'desktop,production' -o dist/package/JAVINIZER.app/Contents/MacOS/JAVINIZER ./cmd/javinizer-title-bulk
+          GOARCH=arm64 go build -trimpath -tags 'desktop,production,sqlite_fts5' -o dist/package/JAVINIZER.app/Contents/MacOS/JAVINIZER ./cmd/javinizer-title-bulk
           cat > dist/package/JAVINIZER.app/Contents/Info.plist <<'PLIST'
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
