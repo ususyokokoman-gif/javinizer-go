@@ -23,6 +23,10 @@ var ErrDumpMiss = errors.New("r18.dev dump: id not found")
 // absence.
 var ErrDumpNoDVDID = fmt.Errorf("%w: row present but dvd_id is NULL", ErrDumpMiss)
 
+// ErrDumpTitleSearchUnavailable means the local dump exists but was built
+// without the FTS5 title index required for fast free-form title lookup.
+var ErrDumpTitleSearchUnavailable = errors.New("r18.dev dump: title search unavailable")
+
 // DumpMatch is one dump row matched by a display-ID query, in candidate
 // priority order (canonical content_id first).
 type DumpMatch struct {
@@ -138,6 +142,10 @@ type R18DevDumpLookup interface {
 	// dvd_id are returned with DVDID empty. Returns (nil, ErrDumpMiss) when
 	// nothing matches.
 	MatchByDisplayID(ctx context.Context, id string) ([]DumpMatch, error)
+
+	// SearchByTitle returns the best local Japanese/English title candidates.
+	// Implementations use an FTS5 trigram index when available.
+	SearchByTitle(ctx context.Context, title string, limit int) ([]DumpTitleMatch, error)
 
 	// LookupMovie resolves a display dvd_id to a fully-populated DumpMovie —
 	// titles, descriptions, runtime, release date, cover/poster/gallery URLs,
