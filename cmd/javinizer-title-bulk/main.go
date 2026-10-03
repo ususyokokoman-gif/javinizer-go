@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/csv"
 	"encoding/hex"
@@ -27,8 +26,9 @@ var mediaExt = map[string]struct{}{
 }
 
 type fileItem struct {
-	Path string
-	Size int64
+	Path      string
+	Size      int64
+	ModTimeNS int64
 }
 
 type duplicateRecord struct {
@@ -39,13 +39,15 @@ type duplicateRecord struct {
 }
 
 type resultRecord struct {
-	Path       string  `json:"path"`
-	Filename   string  `json:"filename"`
-	Title      string  `json:"title"`
-	CatalogID  string  `json:"catalog_id,omitempty"`
-	Status     string  `json:"status"`
-	Error      string  `json:"error,omitempty"`
-	ElapsedMS  int64   `json:"elapsed_ms"`
+	Path      string `json:"path"`
+	Filename  string `json:"filename"`
+	Title     string `json:"title"`
+	CatalogID string `json:"catalog_id,omitempty"`
+	Status    string `json:"status"`
+	Error     string `json:"error,omitempty"`
+	ElapsedMS int64  `json:"elapsed_ms"`
+	Attempts  int    `json:"attempts,omitempty"`
+	Cached    bool   `json:"cached,omitempty"`
 }
 
 type titleWork struct {
@@ -56,8 +58,10 @@ type titleWork struct {
 type titleWorkResult struct {
 	TaskIndex int
 	CatalogID string
+	Status    string
 	Error     string
 	ElapsedMS int64
+	Attempts  int
 }
 
 func main() {
@@ -66,8 +70,12 @@ func main() {
 		outDir     = flag.String("out", "bulk-title-jev-output", "Output directory")
 		workers    = flag.Int("workers", 4, "Concurrent unique-title -> Web -> Jev workers")
 		timeout    = flag.Duration("timeout", 45*time.Second, "Per-title timeout")
-		quickBytes = flag.Int64("quick-hash-bytes", 1<<20, "Bytes sampled from head and tail for duplicate prefilter")
-		skipDup    = flag.Bool("skip-duplicates", false, "Skip duplicate detection")
+		quickBytes  = flag.Int64("quick-hash-bytes", 1<<20, "Bytes sampled from head and tail for duplicate prefilter")
+		skipDup     = flag.Bool("skip-duplicates", false, "Skip duplicate detection")
+		resume      = flag.Bool("resume", true, "Resume from durable title state and reuse terminal cached results")
+		statePath   = flag.String("state", "", "State file path (default: <out>/bulk-state.json)")
+		maxAttempts = flag.Int("max-attempts", 3, "Maximum attempts for transient title-resolution failures")
+		retryBase   = flag.Duration("retry-base-delay", 2*time.Second, "Base delay for transient retry backoff")
 	)
 	flag.Parse()
 
@@ -79,6 +87,12 @@ func main() {
 	}
 	if *quickBytes < 64<<10 {
 		fatalf("-quick-hash-bytes must be >= 65536")
+	}
+	if *maxAttempts < 1 {
+		fatalf("-max-attempts must be >= 1")
+	}
+	if *retryBase < 0 {
+		fatalf("-retry-base-delay must be >= 0")
 	}
 	if strings.TrimSpace(os.Getenv("TYPESAFE_API_KEY")) == "" {
 		fatalf("TYPESAFE_API_KEY is required")
@@ -95,6 +109,22 @@ func main() {
 	if err := os.MkdirAll(absOut, 0o755); err != nil {
 		fatalf("create output directory: %v", err)
 	}
+
+	resolvedStatePath := strings.TrimSpace(*statePath)
+	if resolvedStatePath == "" {
+		resolvedStatePath = filepath.Join(absOut, "bulk-state.json")
+	} else {
+		resolvedStatePath, err = filepath.Abs(resolvedStatePath)
+		if err != nil {
+			fatalf("resolve state path: %v", err)
+		}
+	}
+	store, err := newStateStore(resolvedStatePath, *resume)
+	if err != nil {
+		fatalf("load state: %v", err)
+	}
+	fmt.Printf("STATE_FILE=%s\n", resolvedStatePath)
+	fmt.Printf("RESUME=%t\n", *resume)
 
 	files, err := scanMedia(absRoot)
 	if err != nil {
@@ -135,11 +165,50 @@ func main() {
 	jobs := make(chan int)
 	results := make(chan titleWorkResult, *workers*2)
 	var accepted atomic.Int64
+	var rejected atomic.Int64
 	var failed atomic.Int64
+	var cachedFiles atomic.Int64
+
+	pending := make([]int, 0, len(tasks))
+	cachedTitles := 0
+	for taskIndex, task := range tasks {
+		cached, ok := store.cachedTitle(task.Title)
+		if !ok {
+			pending = append(pending, taskIndex)
+			continue
+		}
+		cachedTitles++
+		groupSize := len(task.Indices)
+		for _, fileIndex := range task.Indices {
+			item := unique[fileIndex]
+			rows[fileIndex] = resultRecord{
+				Path:      item.Path,
+				Filename:  filepath.Base(item.Path),
+				Title:     task.Title,
+				CatalogID: cached.CatalogID,
+				Status:    cached.Status,
+				Error:     cached.Error,
+				Attempts:  cached.Attempts,
+				Cached:    true,
+			}
+		}
+		switch cached.Status {
+		case "accepted":
+			accepted.Add(int64(groupSize))
+		case "rejected":
+			rejected.Add(int64(groupSize))
+		}
+		cachedFiles.Add(int64(groupSize))
+		if err := store.recordTask(task, unique, cached.Status, cached.CatalogID, cached.Error, cached.Attempts); err != nil {
+			fatalf("checkpoint cached state: %v", err)
+		}
+	}
+	fmt.Printf("TITLES_CACHED=%d\n", cachedTitles)
+	fmt.Printf("FILES_CACHED=%d\n", cachedFiles.Load())
 
 	workerCount := *workers
-	if workerCount > len(tasks) {
-		workerCount = len(tasks)
+	if workerCount > len(pending) {
+		workerCount = len(pending)
 	}
 
 	var wg sync.WaitGroup
@@ -149,18 +218,16 @@ func main() {
 			defer wg.Done()
 			for taskIndex := range jobs {
 				task := tasks[taskIndex]
-				began := time.Now()
-				ctx, cancel := context.WithTimeout(context.Background(), *timeout)
-				id, err := resolver.Resolve(ctx, task.Title)
-				cancel()
-
+				resolved := resolveTitleWithRetry(resolver, task.Title, *timeout, *maxAttempts, *retryBase, nil)
 				result := titleWorkResult{
 					TaskIndex: taskIndex,
-					CatalogID: id,
-					ElapsedMS: time.Since(began).Milliseconds(),
+					CatalogID: resolved.CatalogID,
+					Status:    resolutionStatus(resolved.Err),
+					ElapsedMS: resolved.ElapsedMS,
+					Attempts:  resolved.Attempts,
 				}
-				if err != nil {
-					result.Error = err.Error()
+				if resolved.Err != nil {
+					result.Error = resolved.Err.Error()
 				}
 				results <- result
 			}
@@ -168,16 +235,20 @@ func main() {
 	}
 
 	go func() {
-		for i := range tasks {
-			jobs <- i
+		for _, taskIndex := range pending {
+			jobs <- taskIndex
 		}
 		close(jobs)
 		wg.Wait()
 		close(results)
 	}()
 
-	doneFiles := 0
-	lastReported := 0
+	doneFiles := int(cachedFiles.Load())
+	lastReported := doneFiles
+	if doneFiles > 0 {
+		fmt.Printf("PROGRESS=%d/%d ACCEPTED=%d REJECTED=%d ERRORS=%d CACHED=%d\n",
+			doneFiles, len(unique), accepted.Load(), rejected.Load(), failed.Load(), cachedFiles.Load())
+	}
 	for res := range results {
 		task := tasks[res.TaskIndex]
 		groupSize := len(task.Indices)
@@ -187,30 +258,33 @@ func main() {
 				Path:      item.Path,
 				Filename:  filepath.Base(item.Path),
 				Title:     task.Title,
+				CatalogID: res.CatalogID,
+				Status:    res.Status,
+				Error:     res.Error,
 				ElapsedMS: res.ElapsedMS,
-			}
-			if res.Error != "" {
-				row.Status = "error"
-				row.Error = res.Error
-			} else {
-				row.Status = "accepted"
-				row.CatalogID = res.CatalogID
+				Attempts:  res.Attempts,
 			}
 			rows[fileIndex] = row
 		}
 
-		if res.Error != "" {
-			failed.Add(int64(groupSize))
-		} else {
+		switch res.Status {
+		case "accepted":
 			accepted.Add(int64(groupSize))
+		case "rejected":
+			rejected.Add(int64(groupSize))
+		default:
+			failed.Add(int64(groupSize))
+		}
+		if err := store.recordTask(task, unique, res.Status, res.CatalogID, res.Error, res.Attempts); err != nil {
+			fatalf("checkpoint state: %v", err)
 		}
 
 		doneFiles += groupSize
 		if doneFiles-lastReported >= 25 || doneFiles == len(unique) {
 			elapsed := time.Since(started).Seconds()
 			rate := float64(doneFiles) / elapsed
-			fmt.Printf("PROGRESS=%d/%d ACCEPTED=%d ERRORS=%d RATE=%.2f_files_per_sec\n",
-				doneFiles, len(unique), accepted.Load(), failed.Load(), rate)
+			fmt.Printf("PROGRESS=%d/%d ACCEPTED=%d REJECTED=%d ERRORS=%d CACHED=%d RATE=%.2f_files_per_sec\n",
+				doneFiles, len(unique), accepted.Load(), rejected.Load(), failed.Load(), cachedFiles.Load(), rate)
 			lastReported = doneFiles
 		}
 	}
@@ -222,8 +296,8 @@ func main() {
 	elapsed := time.Since(started)
 	rate := float64(len(rows)) / elapsed.Seconds()
 	summary := fmt.Sprintf(
-		"status=PASS\ninput_root=%s\nfiles_total=%d\nduplicates_confirmed=%d\nfiles_judged=%d\ntitles_unique=%d\naccepted=%d\nerrors=%d\nworkers=%d\nworkers_used=%d\nelapsed_seconds=%.2f\nfiles_per_second=%.3f\n",
-		absRoot, len(files), len(duplicates), len(rows), len(tasks), accepted.Load(), failed.Load(), *workers, workerCount, elapsed.Seconds(), rate,
+		"status=PASS\ninput_root=%s\nstate_file=%s\nresume=%t\nfiles_total=%d\nduplicates_confirmed=%d\nfiles_judged=%d\ntitles_unique=%d\ntitles_cached=%d\ntitles_resolved_live=%d\naccepted=%d\nrejected=%d\nerrors=%d\ncached_files=%d\nworkers=%d\nworkers_used=%d\nmax_attempts=%d\nretry_base_delay=%s\nelapsed_seconds=%.2f\nfiles_per_second=%.3f\n",
+		absRoot, resolvedStatePath, *resume, len(files), len(duplicates), len(rows), len(tasks), cachedTitles, len(pending), accepted.Load(), rejected.Load(), failed.Load(), cachedFiles.Load(), *workers, workerCount, *maxAttempts, retryBase.String(), elapsed.Seconds(), rate,
 	)
 	if err := os.WriteFile(filepath.Join(absOut, "summary.txt"), []byte(summary), 0o644); err != nil {
 		fatalf("write summary: %v", err)
@@ -243,7 +317,7 @@ func scanMedia(root string) ([]fileItem, error) {
 		if _, ok := mediaExt[strings.ToLower(filepath.Ext(info.Name()))]; !ok {
 			return nil
 		}
-		out = append(out, fileItem{Path: path, Size: info.Size()})
+		out = append(out, fileItem{Path: path, Size: info.Size(), ModTimeNS: info.ModTime().UnixNano()})
 		return nil
 	})
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
@@ -428,11 +502,11 @@ func writeResults(outDir string, rows []resultRecord) error {
 	defer f.Close()
 	w := csv.NewWriter(f)
 	defer w.Flush()
-	if err := w.Write([]string{"path", "filename", "title", "catalog_id", "status", "error", "elapsed_ms"}); err != nil {
+	if err := w.Write([]string{"path", "filename", "title", "catalog_id", "status", "error", "elapsed_ms", "attempts", "cached"}); err != nil {
 		return err
 	}
 	for _, r := range rows {
-		if err := w.Write([]string{r.Path, r.Filename, r.Title, r.CatalogID, r.Status, r.Error, fmt.Sprintf("%d", r.ElapsedMS)}); err != nil {
+		if err := w.Write([]string{r.Path, r.Filename, r.Title, r.CatalogID, r.Status, r.Error, fmt.Sprintf("%d", r.ElapsedMS), fmt.Sprintf("%d", r.Attempts), fmt.Sprintf("%t", r.Cached)}); err != nil {
 			return err
 		}
 	}
