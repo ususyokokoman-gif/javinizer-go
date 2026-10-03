@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/csv"
 	"encoding/hex"
@@ -76,6 +77,8 @@ func main() {
 		statePath   = flag.String("state", "", "State file path (default: <out>/bulk-state.json)")
 		maxAttempts = flag.Int("max-attempts", 3, "Maximum attempts for transient title-resolution failures")
 		retryBase   = flag.Duration("retry-base-delay", 2*time.Second, "Base delay for transient retry backoff")
+		r18Dump     = flag.String("r18-dump", "", "Local r18.dev dump path (default: JAVINIZER user config directory)")
+		noLocalDB   = flag.Bool("no-local-title-db", false, "Disable local r18.dev title lookup and use web fallback only")
 	)
 	flag.Parse()
 
@@ -167,7 +170,26 @@ func main() {
 		JevCatalogThreshold: 0.80,
 		JevCatalogModel:     "jev-latest",
 	}
-	resolver := scrape.NewTitleCatalogResolver(cfg)
+
+	var resolver *scrape.TitleCatalogResolver
+	var titleDBCloser interface{ Close() error }
+	if !*noLocalDB {
+		titleDB, dbErr := prepareLocalTitleLookup(context.Background(), *r18Dump)
+		if dbErr != nil {
+			fmt.Printf("TITLE_DB=UNAVAILABLE error=%q; using web fallback\n", dbErr.Error())
+			resolver = scrape.NewTitleCatalogResolver(cfg)
+		} else {
+			titleDBCloser = titleDB
+			resolver = scrape.NewTitleCatalogResolverWithLookup(cfg, titleDB)
+			fmt.Println("TITLE_RESOLUTION=LOCAL_R18_THEN_JEV_THEN_WEB")
+		}
+	} else {
+		resolver = scrape.NewTitleCatalogResolver(cfg)
+		fmt.Println("TITLE_RESOLUTION=WEB_ONLY")
+	}
+	if titleDBCloser != nil {
+		defer func() { _ = titleDBCloser.Close() }()
+	}
 
 	started := time.Now()
 	tasks := buildTitleWork(unique)
