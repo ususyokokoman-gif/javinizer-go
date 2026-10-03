@@ -143,10 +143,6 @@ type R18DevDumpLookup interface {
 	// nothing matches.
 	MatchByDisplayID(ctx context.Context, id string) ([]DumpMatch, error)
 
-	// SearchByTitle returns the best local Japanese/English title candidates.
-	// Implementations use an FTS5 trigram index when available.
-	SearchByTitle(ctx context.Context, title string, limit int) ([]DumpTitleMatch, error)
-
 	// LookupMovie resolves a display dvd_id to a fully-populated DumpMovie —
 	// titles, descriptions, runtime, release date, cover/poster/gallery URLs,
 	// actresses, maker, label, series, director, categories, and trailer. This
@@ -157,4 +153,12 @@ type R18DevDumpLookup interface {
 	// Stats reports metadata about the cached dump for diagnostics and the
 	// `javinizer dump status` command.
 	Stats(ctx context.Context) (DumpStats, error)
+}
+
+
+// R18DevTitleLookup is the optional fast free-form title-search capability of
+// an r18.dev dump store. It is separate from R18DevDumpLookup so existing
+// consumers and test doubles do not need to implement title search.
+type R18DevTitleLookup interface {
+	SearchByTitle(ctx context.Context, title string, limit int) ([]DumpTitleMatch, error)
 }
