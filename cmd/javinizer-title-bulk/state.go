@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-const bulkStateVersion = 1
+const bulkStateVersion = 2
 
 type titleResolver interface {
 	Resolve(context.Context, string) (string, error)
@@ -88,7 +88,22 @@ func loadPersistentState(path string) (persistentState, error) {
 		if err := json.Unmarshal(raw, &st); err != nil {
 			continue
 		}
-		if st.Version != bulkStateVersion {
+		if st.Version == 1 {
+			// v2 introduces the local R18 title resolver. Keep prior accepted
+			// mappings, but discard old negative results so titles rejected by
+			// the web-only strategy get one chance through the local fast path.
+			for title, rec := range st.Titles {
+				if rec.Status != "accepted" {
+					delete(st.Titles, title)
+				}
+			}
+			for path, rec := range st.Files {
+				if rec.Status != "accepted" {
+					delete(st.Files, path)
+				}
+			}
+			st.Version = bulkStateVersion
+		} else if st.Version != bulkStateVersion {
 			return persistentState{}, fmt.Errorf("unsupported state version %d in %s", st.Version, candidate)
 		}
 		if st.Files == nil {
