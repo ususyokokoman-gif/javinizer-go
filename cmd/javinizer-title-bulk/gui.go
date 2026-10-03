@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -46,13 +47,17 @@ type guiApp struct {
 }
 
 func runGUI() error {
+	frontend, err := fs.Sub(guiAssets, "gui_frontend")
+	if err != nil {
+		return fmt.Errorf("prepare GUI assets: %w", err)
+	}
 	app := &guiApp{}
 	return wails.Run(&options.App{
 		Title:  "JAVINIZER",
 		Width:  760,
 		Height: 640,
 		AssetServer: &assetserver.Options{
-			Assets: guiAssets,
+			Assets: frontend,
 		},
 		OnStartup: app.startup,
 		Bind: []interface{}{app},
