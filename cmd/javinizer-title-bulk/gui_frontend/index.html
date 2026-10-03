@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>JAVINIZER</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main>
+    <h1>JAVINIZER</h1>
+    <p class="lead">動画フォルダを選んで開始するだけです。</p>
+
+    <section>
+      <label>動画フォルダ</label>
+      <div class="row">
+        <input id="root" readonly placeholder="フォルダを選択してください" />
+        <button id="chooseRoot">選択</button>
+      </div>
+    </section>
+
+    <section id="apiSection">
+      <label>TypeSafe APIキー <span>（初回のみ）</span></label>
+      <input id="apiKey" type="password" autocomplete="off" placeholder="保存済みの場合は空欄でOK" />
+      <small>Windowsの暗号化機能でこのPCのユーザー専用に保存します。</small>
+    </section>
+
+    <details>
+      <summary>保存先</summary>
+      <div class="row">
+        <input id="outDir" readonly />
+        <button id="chooseOut">変更</button>
+      </div>
+    </details>
+
+    <button id="start" class="primary">開始</button>
+    <button id="openResults" class="secondary">結果フォルダを開く</button>
+
+    <div id="status">準備完了</div>
+    <pre id="log"></pre>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>
