@@ -70,7 +70,7 @@ func main() {
 		outDir     = flag.String("out", "bulk-title-jev-output", "Output directory")
 		workers    = flag.Int("workers", 4, "Concurrent unique-title -> Web -> Jev workers")
 		timeout    = flag.Duration("timeout", 45*time.Second, "Per-title timeout")
-		quickBytes  = flag.Int64("quick-hash-bytes", 1<<20, "Bytes sampled from head and tail for duplicate prefilter")
+		quickBytes  = flag.Int64("quick-hash-bytes", 64<<10, "Bytes sampled from head and tail for duplicate prefilter")
 		skipDup     = flag.Bool("skip-duplicates", false, "Skip duplicate detection")
 		resume      = flag.Bool("resume", true, "Resume from durable title state and reuse terminal cached results")
 		statePath   = flag.String("state", "", "State file path (default: <out>/bulk-state.json)")
