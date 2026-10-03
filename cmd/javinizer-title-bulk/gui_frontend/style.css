@@ -39,6 +39,12 @@ button {
   color: white;
   font-size: 17px;
 }
+.danger {
+  width: 100%;
+  margin-top: 8px;
+  background: #fee2e2;
+  color: #991b1b;
+}
 .secondary {
   width: 100%;
   margin-top: 8px;
