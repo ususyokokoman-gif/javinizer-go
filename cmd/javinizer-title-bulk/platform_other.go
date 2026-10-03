@@ -1,11 +1,10 @@
-//go:build !windows
+//go:build !windows && !darwin
 
 package main
 
 import (
 	"encoding/base64"
 	"os/exec"
-	"runtime"
 )
 
 func protectSecret(plain string) (string, error) {
@@ -20,8 +19,5 @@ func unprotectSecret(encoded string) (string, error) {
 func hideCommandWindow(cmd *exec.Cmd) {}
 
 func openFolder(path string) error {
-	if runtime.GOOS == "darwin" {
-		return exec.Command("open", path).Start()
-	}
 	return exec.Command("xdg-open", path).Start()
 }
