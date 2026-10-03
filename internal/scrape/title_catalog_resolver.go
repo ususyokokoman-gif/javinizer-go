@@ -2,23 +2,35 @@ package scrape
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/javinizer/javinizer-go/internal/logging"
+	"github.com/javinizer/javinizer-go/internal/models"
 )
 
 // TitleCatalogResolver is a lightweight title -> catalog ID resolver.
 // It intentionally skips metadata scraping and persistence. The resolver uses
 // public web evidence and, when configured, the Jev catalog gate.
 type TitleCatalogResolver struct {
-	scraper *Scraper
+	scraper     *Scraper
+	titleLookup models.R18DevTitleLookup
 }
 
 // NewTitleCatalogResolver constructs a resolver suitable for high-volume title
 // identification. The supplied Config is copied so callers may safely reuse or
 // mutate their original config while this resolver is running.
 func NewTitleCatalogResolver(cfg *Config) *TitleCatalogResolver {
+	return NewTitleCatalogResolverWithLookup(cfg, nil)
+}
+
+// NewTitleCatalogResolverWithLookup adds an optional zero-HTTP local title
+// lookup. Local candidates still pass through the same Jev >= threshold gate
+// before automatic adoption.
+func NewTitleCatalogResolverWithLookup(cfg *Config, lookup models.R18DevTitleLookup) *TitleCatalogResolver {
 	resolved := Config{}
 	if cfg != nil {
 		resolved = *cfg
@@ -40,6 +52,7 @@ func NewTitleCatalogResolver(cfg *Config) *TitleCatalogResolver {
 			httpClient: client,
 			cfg:        &resolved,
 		},
+		titleLookup: lookup,
 	}
 }
 
@@ -65,5 +78,77 @@ func (r *TitleCatalogResolver) Resolve(ctx context.Context, title string) (strin
 		return ids[0], nil
 	}
 
+	if r.titleLookup != nil {
+		if id, ok := r.resolveFromLocalTitle(ctx, title); ok {
+			return id, nil
+		}
+	}
+
 	return r.scraper.lookupCatalogIDOnWeb(ctx, title)
+}
+
+func (r *TitleCatalogResolver) resolveFromLocalTitle(ctx context.Context, title string) (string, bool) {
+	matches, err := r.titleLookup.SearchByTitle(ctx, title, 5)
+	if err != nil {
+		if !errors.Is(err, models.ErrDumpMiss) &&
+			!errors.Is(err, models.ErrDumpTitleSearchUnavailable) {
+			logging.Warnf("[scrape] local title lookup failed; falling back to web: %v", err)
+		}
+		return "", false
+	}
+	if len(matches) == 0 {
+		return "", false
+	}
+
+	top := matches[0]
+	if strings.TrimSpace(top.DVDID) == "" || top.Score < 0.72 {
+		logging.Infof("[scrape] local title lookup not decisive title=%q top_score=%.3f", truncateRunes(title, 100), top.Score)
+		return "", false
+	}
+	if len(matches) > 1 {
+		margin := top.Score - matches[1].Score
+		// Very close lexical candidates should be corroborated by the web
+		// rather than forcing Jev to decide from an underdetermined local set.
+		if margin < 0.025 && top.Score < 0.97 {
+			logging.Infof("[scrape] local title lookup ambiguous top=%s score=%.3f second=%s score=%.3f", top.DVDID, top.Score, matches[1].DVDID, matches[1].Score)
+			return "", false
+		}
+	}
+
+	evidence := make([]titleWebSearchResult, 0, minInt(3, len(matches)))
+	for i, match := range matches {
+		if i >= 3 {
+			break
+		}
+		displayTitle := strings.TrimSpace(match.TitleJa)
+		if displayTitle == "" {
+			displayTitle = strings.TrimSpace(match.TitleEn)
+		}
+		evidence = append(evidence, titleWebSearchResult{
+			Title: displayTitle,
+			Snippet: fmt.Sprintf(
+				"r18.dev local title index candidate catalog ID %s; title_en=%s; lexical_score=%.3f",
+				match.DVDID,
+				strings.TrimSpace(match.TitleEn),
+				match.Score,
+			),
+			URL: "https://r18.dev/",
+		})
+	}
+
+	logging.Infof("[scrape] local title candidate=%s score=%.3f; validating with Jev before web", top.DVDID, top.Score)
+	id, err := r.scraper.finalizeCatalogCandidate(ctx, title, top.DVDID, evidence)
+	if err != nil {
+		logging.Infof("[scrape] local title candidate=%s not accepted; falling back to web: %v", top.DVDID, err)
+		return "", false
+	}
+	logging.Infof("[scrape] local title accepted candidate=%s; web search skipped", id)
+	return id, true
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
