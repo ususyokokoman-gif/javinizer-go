@@ -173,6 +173,7 @@ func (a *guiApp) Start(root, outDir, apiKey string) guiRunResult {
 		"-root", root,
 		"-out", outDir,
 		"-workers", workerCount,
+		"-skip-duplicates",
 		"-timeout", "45s",
 		"-max-attempts", "2",
 		"-retry-base-delay", "1s",
