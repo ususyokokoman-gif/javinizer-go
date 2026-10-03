@@ -32,6 +32,17 @@ type DumpMatch struct {
 	ServiceCode string
 }
 
+// DumpTitleMatch is a local title-search candidate from the r18.dev dump.
+// Score is a deterministic 0..1 lexical similarity used only for ranking;
+// callers may apply Jev or other validation before accepting the candidate.
+type DumpTitleMatch struct {
+	ContentID string  `json:"content_id"`
+	DVDID     string  `json:"dvd_id"`
+	TitleJa   string  `json:"title_ja"`
+	TitleEn   string  `json:"title_en"`
+	Score     float64 `json:"score"`
+}
+
 // DumpStats describes a locally cached r18.dev database dump.
 type DumpStats struct {
 	RowCount   int64  `json:"row_count"`
