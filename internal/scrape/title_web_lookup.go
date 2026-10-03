@@ -44,6 +44,16 @@ func (s *Scraper) lookupCatalogIDOnWeb(ctx context.Context, title string) (strin
 	}
 
 	queries := buildTitleWebQueries(title)
+	if !directOK && len(queries) > 0 && s.jevCatalogGateEnabled() {
+		if id, accepted, fastErr := s.tryJevFastTitlePath(ctx, title, queries[0]); accepted {
+			return id, nil
+		} else if fastErr != nil {
+			if ctx.Err() != nil {
+				return "", ctx.Err()
+			}
+			logging.Infof("[scrape] Jev fast path did not finish title=%q: %v", truncateRunes(title, 100), fastErr)
+		}
+	}
 	// A unique exact title from a verified detail page is already strong primary
 	// evidence. One independent general-web query is enough to look for a
 	// conflict/corroboration signal; repeatedly issuing site-qualified variants
@@ -108,6 +118,35 @@ func (s *Scraper) lookupCatalogIDOnWeb(ctx context.Context, title string) (strin
 	}
 	logging.Infof("[scrape] using verified direct title candidate %s after no conflicting strong web evidence was found", id)
 	return s.finalizeCatalogCandidate(ctx, title, id, merged)
+}
+
+
+func (s *Scraper) tryJevFastTitlePath(ctx context.Context, title, query string) (string, bool, error) {
+	if s == nil || !s.jevCatalogGateEnabled() || strings.TrimSpace(query) == "" {
+		return "", false, nil
+	}
+
+	// DuckDuckGo's HTML endpoint is deliberately used before Google here because
+	// it is a plain HTTP request and never launches the expensive headless-browser
+	// fallback. Jev is the mandatory acceptance gate for this lower-cost path.
+	results, err := s.fetchDuckDuckGoTitleSearch(ctx, query)
+	if err != nil {
+		return "", false, err
+	}
+	id, ok := chooseJevFastCandidate(title, results)
+	if !ok {
+		logging.Infof("[scrape] Jev fast path found no decisive candidate from DuckDuckGo")
+		return "", false, nil
+	}
+
+	logging.Infof("[scrape] Jev fast path candidate=%s from DuckDuckGo; validating immediately", id)
+	validated, err := s.finalizeCatalogCandidate(ctx, title, id, results)
+	if err != nil {
+		logging.Infof("[scrape] Jev fast path candidate=%s not accepted: %v", id, err)
+		return "", false, err
+	}
+	logging.Infof("[scrape] Jev fast path accepted candidate=%s; skipping deep web search", validated)
+	return validated, true, nil
 }
 
 func chooseVerifiedDirectFallback(title, directID string, webEvidence []titleWebSearchResult) (string, error) {
