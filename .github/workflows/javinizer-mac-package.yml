@@ -6,6 +6,10 @@ on:
       - feature/keepwords
     paths:
       - '.github/workflows/javinizer-mac-package.yml'
+      - 'cmd/javinizer-title-bulk/**'
+      - 'internal/scrape/**'
+      - 'go.mod'
+      - 'go.sum'
   workflow_dispatch:
 
 permissions:
@@ -17,19 +21,15 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: 3f657cd97768fe73019a1b90a7c3b3148de8b2e6
 
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: false
 
-      - name: Verify source
+      - name: Show source
         shell: bash
-        run: |
-          set -euo pipefail
-          test "$(git rev-parse HEAD)" = "3f657cd97768fe73019a1b90a7c3b3148de8b2e6"
+        run: git rev-parse HEAD
 
       - name: Test
         shell: bash
