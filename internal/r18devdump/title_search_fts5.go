@@ -186,8 +186,12 @@ func (s *Store) SearchByTitle(ctx context.Context, query string, limit int) ([]m
 	for _, m := range seen {
 		out = append(out, m)
 	}
+	out = dedupeTitleMatchesByDisplayID(out)
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Score == out[j].Score {
+			if isPreferredDisplayID(out[i].DVDID) != isPreferredDisplayID(out[j].DVDID) {
+				return isPreferredDisplayID(out[i].DVDID)
+			}
 			return out[i].DVDID < out[j].DVDID
 		}
 		return out[i].Score > out[j].Score
@@ -287,22 +291,177 @@ func titleSimilarity(query, candidate string) float64 {
 
 	qgrams := runeTrigrams(q)
 	cgrams := runeTrigrams(c)
-	if len(qgrams) == 0 || len(cgrams) == 0 {
-		return 0
-	}
-	inter := 0
-	for g := range qgrams {
-		if _, ok := cgrams[g]; ok {
-			inter++
+	trigramScore := 0.0
+	if len(qgrams) > 0 && len(cgrams) > 0 {
+		inter := 0
+		for g := range qgrams {
+			if _, ok := cgrams[g]; ok {
+				inter++
+			}
+		}
+		union := len(qgrams) + len(cgrams) - inter
+		if union > 0 {
+			jaccard := float64(inter) / float64(union)
+			prefix := commonPrefixRatio(q, c)
+			trigramScore = 0.75*jaccard + 0.25*prefix
 		}
 	}
-	union := len(qgrams) + len(cgrams) - inter
-	if union == 0 {
+
+	// r18.dev intentionally censors some characters in Japanese titles with
+	// symbols such as ●. Treat those symbols as a single-character wildcard
+	// instead of penalising the whole trigram neighbourhood.
+	wildcardScore := wildcardTitleSimilarity(query, candidate)
+	if wildcardScore > trigramScore {
+		return wildcardScore
+	}
+	return trigramScore
+}
+
+func wildcardTitleSimilarity(query, candidate string) float64 {
+	q := normalizeTitleSearchWildcard(stripCommonFilenamePrefix(query))
+	c := normalizeTitleSearchWildcard(candidate)
+	if len(q) == 0 || len(c) == 0 {
 		return 0
 	}
-	jaccard := float64(inter) / float64(union)
-	prefix := commonPrefixRatio(q, c)
-	return 0.75*jaccard + 0.25*prefix
+	d := wildcardLevenshtein(q, c)
+	maxLen := len(q)
+	if len(c) > maxLen {
+		maxLen = len(c)
+	}
+	if maxLen == 0 {
+		return 0
+	}
+	score := 1 - float64(d)/float64(maxLen)
+	if score < 0 {
+		return 0
+	}
+	return score
+}
+
+func normalizeTitleSearchWildcard(s string) []rune {
+	s = strings.ToLower(strings.TrimSpace(s))
+	out := make([]rune, 0, len([]rune(s)))
+	for _, r := range s {
+		switch r {
+		case '●', '○', '◯', '＊', '*', '×':
+			out = append(out, '?')
+		default:
+			if unicode.IsLetter(r) || unicode.IsNumber(r) {
+				out = append(out, r)
+			}
+		}
+	}
+	return out
+}
+
+func wildcardLevenshtein(a, b []rune) int {
+	if len(a) == 0 {
+		return len(b)
+	}
+	if len(b) == 0 {
+		return len(a)
+	}
+	prev := make([]int, len(b)+1)
+	curr := make([]int, len(b)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 1; i <= len(a); i++ {
+		curr[0] = i
+		for j := 1; j <= len(b); j++ {
+			cost := 1
+			if a[i-1] == b[j-1] || a[i-1] == '?' || b[j-1] == '?' {
+				cost = 0
+			}
+			del := prev[j] + 1
+			ins := curr[j-1] + 1
+			sub := prev[j-1] + cost
+			curr[j] = del
+			if ins < curr[j] {
+				curr[j] = ins
+			}
+			if sub < curr[j] {
+				curr[j] = sub
+			}
+		}
+		prev, curr = curr, prev
+	}
+	return prev[len(b)]
+}
+
+func dedupeTitleMatchesByDisplayID(in []models.DumpTitleMatch) []models.DumpTitleMatch {
+	if len(in) < 2 {
+		return in
+	}
+
+	standard := make(map[string]bool, len(in))
+	for _, m := range in {
+		key := displayIDKey(m.DVDID)
+		if key != "" && isPreferredDisplayID(m.DVDID) {
+			standard[key] = true
+		}
+	}
+
+	best := make(map[string]models.DumpTitleMatch, len(in))
+	order := make([]string, 0, len(in))
+	for _, m := range in {
+		key := displayIDKey(m.DVDID)
+		if key == "" {
+			continue
+		}
+		group := key
+		if stripped := stripServicePrefix(key); stripped != key && standard[stripped] {
+			group = stripped
+		}
+		old, ok := best[group]
+		if !ok {
+			best[group] = m
+			order = append(order, group)
+			continue
+		}
+		if m.Score > old.Score ||
+			(m.Score == old.Score && isPreferredDisplayID(m.DVDID) && !isPreferredDisplayID(old.DVDID)) {
+			best[group] = m
+		}
+	}
+
+	out := make([]models.DumpTitleMatch, 0, len(order))
+	for _, key := range order {
+		out = append(out, best[key])
+	}
+	return out
+}
+
+func displayIDKey(id string) string {
+	id = strings.ToUpper(strings.TrimSpace(id))
+	var b strings.Builder
+	for _, r := range id {
+		if unicode.IsLetter(r) || unicode.IsNumber(r) {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+func stripServicePrefix(key string) string {
+	r := []rune(key)
+	i := 0
+	for i < len(r) && unicode.IsNumber(r[i]) {
+		i++
+	}
+	if i > 0 && i < len(r) && unicode.IsLetter(r[i]) {
+		return string(r[i:])
+	}
+	return key
+}
+
+func isPreferredDisplayID(id string) bool {
+	id = strings.TrimSpace(id)
+	if strings.Contains(id, "-") {
+		return true
+	}
+	r := []rune(id)
+	return len(r) > 0 && unicode.IsLetter(r[0])
 }
 
 func normalizeTitleSearch(s string) string {
