@@ -133,7 +133,10 @@ func normalizeKeepWordKey(word string) string {
 // Config-bridge reads: cfg.Scrapers.Priority, cfg.Metadata.Translation.Enabled,
 // cfg.Metadata.Translation.TargetLanguage, cfg.Metadata.Translation.SettingsHash(),
 // cfg.Metadata.ActressDatabase.Enabled, cfg.Scrapers.ScrapeActress,
-// cfg.Scrapers.UserAgent, cfg.Scrapers.Referer, cfg.System.TempDir,
+// cfg.Scrapers.UserAgent, cfg.Scrapers.Referer, cfg.System.TempDir, cfg.Output,
+// cfg.Metadata.CatalogIDValidation.Enabled, cfg.Metadata.CatalogIDValidation.APIKey,
+// cfg.Metadata.CatalogIDValidation.Threshold, cfg.Metadata.CatalogIDValidation.Model,
+// cfg.Metadata.CatalogIDValidation.Endpoint,
 // and every output naming template containing KEEPWORDS.
 func ConfigFromAppConfig(cfg *config.Config) *Config {
 	if cfg == nil {

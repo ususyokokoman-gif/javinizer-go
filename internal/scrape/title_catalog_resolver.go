@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/javinizer/javinizer-go/internal/logging"
@@ -14,10 +15,12 @@ import (
 
 // TitleCatalogResolver is a lightweight title -> catalog ID resolver.
 // It intentionally skips metadata scraping and persistence. The resolver uses
-// public web evidence and, when configured, the Jev catalog gate.
+// local dump candidates verified by Jev before falling back to public Web
+// evidence and its configured Jev catalog gate.
 type TitleCatalogResolver struct {
-	scraper     *Scraper
-	titleLookup models.R18DevTitleLookup
+	scraper          *Scraper
+	titleLookup      models.R18DevTitleLookup
+	firstLocalSearch sync.Once
 }
 
 // NewTitleCatalogResolver constructs a resolver suitable for high-volume title
@@ -82,14 +85,37 @@ func (r *TitleCatalogResolver) Resolve(ctx context.Context, title string) (strin
 		if id, ok := r.resolveFromLocalTitle(ctx, title); ok {
 			return id, nil
 		}
+	} else {
+		logging.Infof("LOCAL_TITLE_SEARCH=UNAVAILABLE reason=no_local_dump")
 	}
 
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	return r.scraper.lookupCatalogIDOnWeb(ctx, title)
 }
 
 func (r *TitleCatalogResolver) resolveFromLocalTitle(ctx context.Context, title string) (string, bool) {
+	began := time.Now()
+	first := false
+	r.firstLocalSearch.Do(func() {
+		first = true
+		logging.Infof("TIMING scope=resolver phase=first_local_title_search event=START timestamp=%s elapsed_ms=0", began.UTC().Format(time.RFC3339Nano))
+	})
 	matches, err := r.titleLookup.SearchByTitle(ctx, title, 5)
+	if first {
+		status := "ok"
+		if err != nil {
+			status = "error"
+		}
+		logging.Infof("TIMING scope=resolver phase=first_local_title_search event=END timestamp=%s elapsed_ms=%.3f status=%s", time.Now().UTC().Format(time.RFC3339Nano), float64(time.Since(began).Microseconds())/1000, status)
+	}
 	if err != nil {
+		status := "UNAVAILABLE"
+		if errors.Is(err, models.ErrDumpMiss) {
+			status = "MISS"
+		}
+		logging.Infof("LOCAL_TITLE_SEARCH=%s", status)
 		if !errors.Is(err, models.ErrDumpMiss) &&
 			!errors.Is(err, models.ErrDumpTitleSearchUnavailable) {
 			logging.Warnf("[scrape] local title lookup failed; falling back to web: %v", err)
@@ -97,41 +123,29 @@ func (r *TitleCatalogResolver) resolveFromLocalTitle(ctx context.Context, title 
 		return "", false
 	}
 	if len(matches) == 0 {
+		logging.Infof("LOCAL_TITLE_SEARCH=MISS")
 		return "", false
 	}
 
 	top := matches[0]
 	if strings.TrimSpace(top.DVDID) == "" || top.Score < 0.72 {
-		logging.Infof("[scrape] local title lookup not decisive title=%q top_score=%.3f", truncateRunes(title, 100), top.Score)
+		logging.Infof("LOCAL_TITLE_SEARCH=MISS reason=weak_candidate title=%q top_score=%.3f", truncateRunes(title, 100), top.Score)
 		return "", false
 	}
-	margin := 1.0
 	if len(matches) > 1 {
-		margin = top.Score - matches[1].Score
+		margin := top.Score - matches[1].Score
 		// Distinct IDs with effectively the same lexical score are genuinely
 		// ambiguous even when both titles look exact. Do not pick one by sort
 		// order.
 		if margin < 0.025 {
-			logging.Infof("[scrape] local title lookup ambiguous top=%s score=%.3f second=%s score=%.3f", top.DVDID, top.Score, matches[1].DVDID, matches[1].Score)
+			logging.Infof("LOCAL_TITLE_SEARCH=MISS reason=ambiguous top=%s score=%.3f second=%s score=%.3f", top.DVDID, top.Score, matches[1].DVDID, matches[1].Score)
 			return "", false
 		}
 	}
 
-	// Deterministic code outranks an external model. A strong unique match in
-	// the local canonical dump is accepted immediately; Jev is reserved for
-	// medium-confidence candidates. This removes network latency for the common
-	// case and avoids Jev under-scoring r18.dev's intentionally censored titles.
-	if top.Score >= 0.90 && margin >= 0.05 {
-		id := normalizeWebCatalogCandidate(top.DVDID)
-		if id != "" {
-			logging.Infof("[scrape] local title deterministic accept candidate=%s score=%.3f margin=%.3f; web and Jev skipped", id, top.Score, margin)
-			return id, true
-		}
-	}
-
-	evidence := make([]titleWebSearchResult, 0, minInt(3, len(matches)))
+	evidence := make([]titleWebSearchResult, 0, minInt(5, len(matches)))
 	for i, match := range matches {
-		if i >= 3 {
+		if i >= 5 {
 			break
 		}
 		displayTitle := strings.TrimSpace(match.TitleJa)
@@ -150,13 +164,18 @@ func (r *TitleCatalogResolver) resolveFromLocalTitle(ctx context.Context, title 
 		})
 	}
 
+	if !r.scraper.jevCatalogGateEnabled() {
+		logging.Infof("LOCAL_TITLE_SEARCH=MISS reason=jev_unavailable")
+		return "", false
+	}
+
 	logging.Infof("[scrape] local title candidate=%s score=%.3f; validating with Jev before web", top.DVDID, top.Score)
 	id, err := r.scraper.finalizeCatalogCandidate(ctx, title, top.DVDID, evidence)
 	if err != nil {
-		logging.Infof("[scrape] local title candidate=%s not accepted; falling back to web: %v", top.DVDID, err)
+		logging.Infof("LOCAL_TITLE_SEARCH=MISS reason=jev_rejected candidate=%s; falling back to web: %v", top.DVDID, err)
 		return "", false
 	}
-	logging.Infof("[scrape] local title accepted candidate=%s; web search skipped", id)
+	logging.Infof("LOCAL_TITLE_SEARCH=HIT candidate=%s; web search skipped", id)
 	return id, true
 }
 

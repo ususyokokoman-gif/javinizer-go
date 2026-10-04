@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-const bulkStateVersion = 2
+const bulkStateVersion = 3
 
 type titleResolver interface {
 	Resolve(context.Context, string) (string, error)
@@ -103,6 +103,11 @@ func loadPersistentState(path string) (persistentState, error) {
 				}
 			}
 			st.Version = bulkStateVersion
+		} else if st.Version == 2 {
+			// v2 allowed lexical-only local acceptance without Jev provenance.
+			// Re-resolve once under the mandatory gate; retain batching and resume
+			// for all results written by this version.
+			st = emptyPersistentState()
 		} else if st.Version != bulkStateVersion {
 			return persistentState{}, fmt.Errorf("unsupported state version %d in %s", st.Version, candidate)
 		}

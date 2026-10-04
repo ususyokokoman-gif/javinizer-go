@@ -38,8 +38,9 @@ jobs:
         run: |
           set -euo pipefail
           go test -tags 'sqlite_fts5' ./internal/r18devdump -count=1
-          go test -tags 'sqlite_fts5' ./internal/scrape -run '^(TestChooseJevFastCandidate|TestTitleCatalogResolverBypassesNetworkForEmbeddedCatalogID|TestJevCatalogGate|TestLookupCatalogIDOnWeb)' -count=1
+          go test -tags 'sqlite_fts5' ./internal/scrape -run '^(TestLocalTitle|TestTitleCatalogResolver|TestChooseJevFastCandidate|TestTitleCatalogResolverBypassesNetworkForEmbeddedCatalogID|TestJevCatalogGate|TestLookupCatalogIDOnWeb)' -count=1
           go test -tags 'sqlite_fts5' ./cmd/javinizer-title-bulk -count=1
+          node --test cmd/javinizer-title-bulk/gui_frontend/status.test.cjs
 
       - name: Build Apple Silicon app
         shell: bash

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/javinizer/javinizer-go/internal/models"
 	"github.com/javinizer/javinizer-go/internal/r18devdump"
 )
 
@@ -26,9 +27,13 @@ func defaultR18DumpPath() string {
 
 // prepareLocalTitleLookup makes the local title fast path self-contained for
 // the GUI. Existing databases are upgraded with the FTS5 title index once.
-// When no database exists, the latest r18.dev dump is streamed directly into
-// SQLite; the full decompressed dump is never held in memory.
+// Missing dumps are unavailable during normal processing. Download/import is
+// opt-in via -prepare-title-db so first-run GUI processing can fall back promptly.
 func prepareLocalTitleLookup(ctx context.Context, path string) (*r18devdump.Store, error) {
+	return prepareLocalTitleLookupWithDownload(ctx, path, false)
+}
+
+func prepareLocalTitleLookupWithDownload(ctx context.Context, path string, download bool) (*r18devdump.Store, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
 		path = defaultR18DumpPath()
@@ -55,12 +60,16 @@ func prepareLocalTitleLookup(ctx context.Context, path string) (*r18devdump.Stor
 		return nil, fmt.Errorf("stat local title database: %w", err)
 	}
 
+	if !download {
+		return nil, fmt.Errorf("%w: dump not found at %s; run -prepare-title-db to download/import it", models.ErrDumpTitleSearchUnavailable, path)
+	}
+
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return nil, fmt.Errorf("create local title database directory: %w", err)
 	}
 	fmt.Printf("TITLE_DB=FIRST_RUN_DOWNLOAD path=%s\n", path)
 
-	client := &http.Client{Timeout: 0}
+	client := &http.Client{Timeout: 30 * time.Minute}
 	var lastPrinted int64
 	var lastPrint time.Time
 	progress := func(done, total int64) {

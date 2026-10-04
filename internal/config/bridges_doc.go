@@ -64,6 +64,11 @@
 //	cfg.Metadata                             → aggregator
 //	cfg.Metadata.ActressDatabase.ConvertAlias → aggregator
 //	cfg.Metadata.ActressDatabase.Enabled    → aggregator, scrape
+//	cfg.Metadata.CatalogIDValidation.APIKey    → scrape
+//	cfg.Metadata.CatalogIDValidation.Enabled   → scrape
+//	cfg.Metadata.CatalogIDValidation.Endpoint  → scrape
+//	cfg.Metadata.CatalogIDValidation.Model     → scrape
+//	cfg.Metadata.CatalogIDValidation.Threshold → scrape
 //	cfg.Metadata.GenreReplacement.AutoAdd   → aggregator
 //	cfg.Metadata.GenreReplacement.Enabled   → aggregator
 //	cfg.Metadata.IgnoreGenres                → aggregator
@@ -105,6 +110,7 @@
 //	cfg.Metadata.Translation.TargetLanguage    → scrape, translation
 //	cfg.Metadata.Translation.TimeoutSeconds    → translation
 //	cfg.Output.Operation.AllowRevert                  → api/core, organizer, workflow
+//	cfg.Output                                       → scrape
 //	cfg.Output.MediaFormat.ActressFolder                → downloader, organizer
 //	cfg.Output.MediaFormat.ActressFormat                → downloader, organizer
 //	cfg.Output.Template.ActressDelimiter                    → organizer

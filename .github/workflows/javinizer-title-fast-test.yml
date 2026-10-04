@@ -28,6 +28,7 @@ jobs:
       - name: Test local FTS5 title search
         run: go test -tags 'sqlite_fts5' ./internal/r18devdump -run 'TestSearchByTitle' -count=1 -v
       - name: Test local title to Jev path
-        run: go test -tags 'sqlite_fts5' ./internal/scrape -run 'TestTitleCatalogResolverUsesLocalTitleThenJevWithoutWeb|TestTitleCatalogResolverSkipsWeakLocalCandidate' -count=1 -v
+        run: go test -tags 'sqlite_fts5' ./internal/scrape -run 'TestTitleCatalogResolver|TestLocalTitle' -count=1 -v
       - name: Compile title bulk tests
         run: go test -tags 'sqlite_fts5' ./cmd/javinizer-title-bulk -count=1
+          node --test cmd/javinizer-title-bulk/gui_frontend/status.test.cjs

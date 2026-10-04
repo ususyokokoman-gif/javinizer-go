@@ -7,7 +7,8 @@
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <main>
+  <main id="main">
+ <div class="settings">
     <h1>JAVINIZER</h1>
     <p class="lead">動画フォルダを選んで開始するだけです。</p>
 
@@ -22,7 +23,7 @@
     <section id="apiSection">
       <label>TypeSafe APIキー <span>（初回のみ）</span></label>
       <input id="apiKey" type="password" autocomplete="off" placeholder="保存済みの場合は空欄でOK" />
-      <small>Windowsの暗号化機能でこのPCのユーザー専用に保存します。</small>
+      <small>APIキーはこのPCのユーザー専用に安全に保存します。</small>
     </section>
 
     <details>
@@ -33,12 +34,29 @@
       </div>
     </details>
 
-    <button id="start" class="primary">開始</button>
+    <div class="actions">
+ <button id="start" class="primary">開始</button>
     <button id="cancel" class="danger" disabled>キャンセル</button>
     <button id="openResults" class="secondary">結果フォルダを開く</button>
 
-    <div id="status">準備完了</div>
-    <pre id="log"></pre>
+    </div></div>
+    <div id="status" role="status" aria-live="polite">準備完了</div>
+    <div id="runSummary" hidden></div>
+    <section class="logs" aria-label="処理ログ">
+      <div class="toolbar">
+        <strong>処理の状況</strong>
+        <button id="expandLog">ログを拡大</button>
+        <button id="pauseLog">表示を一時停止</button>
+        <button id="copyLog">ログをコピー</button>
+        <label><input id="autoScroll" type="checkbox" checked />自動スクロール</label>
+      </div>
+      <pre id="log" tabindex="0" aria-label="日本語の処理ログ"></pre>
+      <details id="technicalDetails">
+        <summary>詳細ログ（技術情報）</summary>
+        <small>画面には最新10,000行を表示します。全件は結果フォルダの run.log に保存します。</small>
+        <pre id="technicalLog" tabindex="0" aria-label="詳細ログ"></pre>
+      </details>
+    </section>
   </main>
   <script src="app.js"></script>
 </body>

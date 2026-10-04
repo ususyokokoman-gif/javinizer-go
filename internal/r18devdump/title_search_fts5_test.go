@@ -4,6 +4,8 @@ package r18devdump
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"strings"
 	"testing"
 
@@ -70,7 +72,6 @@ func TestSearchByTitleStripsCommonFilenamePrefix(t *testing.T) {
 	}
 }
 
-
 func TestTitleSimilarityTreatsCensorMarkerAsWildcard(t *testing.T) {
 	got := titleSimilarity(
 		"今日、あなたの上司に犯されました。 大橋未久",
@@ -91,5 +92,46 @@ func TestDedupeTitleMatchesPrefersStandardDisplayID(t *testing.T) {
 	}
 	if got[0].DVDID != "IPZ-508" {
 		t.Fatalf("DVDID=%q, want IPZ-508", got[0].DVDID)
+	}
+}
+
+func TestSearchByTitleEnglishAndIndexUpgrade(t *testing.T) {
+	path := t.TempDir() + "/dump.db"
+	dump := "COPY public.derived_video (content_id, dvd_id, title_en, title_ja) FROM stdin;\nabc00123\tABC-123\tTargeted School Route\t日本語の作品名\n\\.\n"
+	if _, err := Import(context.Background(), strings.NewReader(dump), path, ImportOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite3", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec("DROP TABLE video_titles_fts"); err != nil {
+		t.Fatal(err)
+	}
+	_ = db.Close()
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.SearchByTitle(context.Background(), "Targeted School Route", 5); !errors.Is(err, models.ErrDumpTitleSearchUnavailable) {
+		t.Fatalf("missing index: %v", err)
+	}
+	_ = store.Close()
+	for i := 0; i < 2; i++ {
+		if err := EnsureTitleSearchIndex(context.Background(), path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	got, err := store.SearchByTitle(context.Background(), "targeted school route", 5)
+	if err != nil || len(got) != 1 || got[0].DVDID != "ABC-123" {
+		t.Fatalf("english lookup: %+v %v", got, err)
+	}
+	if _, err := store.SearchByTitle(context.Background(), "unknown title", 5); !errors.Is(err, models.ErrDumpMiss) {
+		t.Fatalf("miss: %v", err)
 	}
 }

@@ -1,0 +1,61 @@
+name: JAVINIZER Windows Title Package
+
+on:
+  push:
+    branches: [feature/keepwords]
+    paths:
+      - 'cmd/javinizer-title-bulk/**'
+      - 'internal/scrape/**'
+      - 'internal/r18devdump/**'
+      - 'internal/models/r18dev_dump.go'
+      - '.github/workflows/javinizer-title-windows-package.yml'
+      - 'go.mod'
+      - 'go.sum'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: mingw-w64-ucrt-x86_64-gcc
+      - name: Configure CGO SQLite toolchain
+        run: |
+          'C:\msys64\ucrt64\bin' | Out-File $env:GITHUB_PATH -Encoding utf8 -Append
+          'CC=gcc' | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          'CGO_ENABLED=1' | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Test title resolution and checkpoint regressions
+        run: |
+          go test -tags sqlite_fts5 ./internal/r18devdump -count=1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go test -tags sqlite_fts5 ./internal/scrape -run 'TestTitleCatalogResolver|TestLocalTitle|TestJevCatalogGate|TestLookupCatalogIDOnWeb' -count=1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go test -tags sqlite_fts5 ./cmd/javinizer-title-bulk -count=1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build title bulk GUI
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          go build -trimpath -tags 'desktop,production,sqlite_fts5' -ldflags '-w -s -H windowsgui' -o dist/JAVINIZER.exe ./cmd/javinizer-title-bulk
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-FileHash dist/JAVINIZER.exe -Algorithm SHA256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: JAVINIZER-Windows-Title
+          path: dist/JAVINIZER.exe
+          if-no-files-found: error
+          retention-days: 14

@@ -67,10 +67,10 @@ type titleWorkResult struct {
 
 func main() {
 	var (
-		root       = flag.String("root", "", "Root directory containing media files")
-		outDir     = flag.String("out", "bulk-title-jev-output", "Output directory")
-		workers    = flag.Int("workers", 4, "Concurrent unique-title -> Web -> Jev workers")
-		timeout    = flag.Duration("timeout", 45*time.Second, "Per-title timeout")
+		root        = flag.String("root", "", "Root directory containing media files")
+		outDir      = flag.String("out", "bulk-title-jev-output", "Output directory")
+		workers     = flag.Int("workers", 4, "Concurrent unique-title -> Local -> Jev -> Web fallback workers")
+		timeout     = flag.Duration("timeout", 45*time.Second, "Per-title timeout")
 		quickBytes  = flag.Int64("quick-hash-bytes", 64<<10, "Bytes sampled from head and tail for duplicate prefilter")
 		skipDup     = flag.Bool("skip-duplicates", true, "Skip duplicate detection (set -skip-duplicates=false to enable)")
 		resume      = flag.Bool("resume", true, "Resume from durable title state and reuse terminal cached results")
@@ -84,7 +84,7 @@ func main() {
 	flag.Parse()
 
 	if *prepareDB {
-		db, err := prepareLocalTitleLookup(context.Background(), *r18Dump)
+		db, err := prepareLocalTitleLookupWithDownload(context.Background(), *r18Dump, true)
 		if err != nil {
 			fatalf("prepare local title database: %v", err)
 		}
@@ -106,6 +106,8 @@ func main() {
 		}
 		fatalf("-root is required")
 	}
+	runStarted := time.Now()
+	configDone := beginCLIPhase("config")
 	if *workers < 1 {
 		fatalf("-workers must be >= 1")
 	}
@@ -143,7 +145,10 @@ func main() {
 			fatalf("resolve state path: %v", err)
 		}
 	}
+	configDone(nil)
+	stateDone := beginCLIPhase("state_load")
 	store, err := newStateStore(resolvedStatePath, *resume)
+	stateDone(err)
 	if err != nil {
 		fatalf("load state: %v", err)
 	}
@@ -151,7 +156,13 @@ func main() {
 	fmt.Printf("RESUME=%t\n", *resume)
 
 	scanStarted := time.Now()
-	files, err := scanMedia(absRoot)
+	scanDone := beginCLIPhase("media_scan")
+	scan := scanMediaWithProgress
+	if *skipDup {
+		scan = scanMediaForTitles
+	}
+	files, err := scan(absRoot, func(found int) { fmt.Printf("MEDIA_SCAN_PROGRESS=%d\n", found) })
+	scanDone(err)
 	if err != nil {
 		fatalf("scan media: %v", err)
 	}
@@ -178,34 +189,10 @@ func main() {
 		}
 	}
 
-	cfg := &scrape.Config{
-		JevCatalogEnabled:   true,
-		JevCatalogThreshold: 0.80,
-		JevCatalogModel:     "jev-latest",
-	}
-
-	var resolver *scrape.TitleCatalogResolver
-	var titleDBCloser interface{ Close() error }
-	if !*noLocalDB {
-		titleDB, dbErr := prepareLocalTitleLookup(context.Background(), *r18Dump)
-		if dbErr != nil {
-			fmt.Printf("TITLE_DB=UNAVAILABLE error=%q; using web fallback\n", dbErr.Error())
-			resolver = scrape.NewTitleCatalogResolver(cfg)
-		} else {
-			titleDBCloser = titleDB
-			resolver = scrape.NewTitleCatalogResolverWithLookup(cfg, titleDB)
-			fmt.Println("TITLE_RESOLUTION=LOCAL_R18_THEN_JEV_THEN_WEB")
-		}
-	} else {
-		resolver = scrape.NewTitleCatalogResolver(cfg)
-		fmt.Println("TITLE_RESOLUTION=WEB_ONLY")
-	}
-	if titleDBCloser != nil {
-		defer func() { _ = titleDBCloser.Close() }()
-	}
-
-	started := time.Now()
+	started := runStarted
+	groupingDone := beginCLIPhase("title_grouping")
 	tasks := buildTitleWork(unique)
+	groupingDone(nil)
 	fmt.Printf("TITLES_UNIQUE=%d\n", len(tasks))
 
 	rows := make([]resultRecord, len(unique))
@@ -250,19 +237,57 @@ func main() {
 	fmt.Printf("TITLES_CACHED=%d\n", cachedTitles)
 	fmt.Printf("FILES_CACHED=%d\n", cachedFiles.Load())
 
+	cfg := &scrape.Config{
+		JevCatalogEnabled:   true,
+		JevCatalogThreshold: 0.80,
+		JevCatalogModel:     "jev-latest",
+	}
+
+	var resolver *scrape.TitleCatalogResolver
+	var titleDBCloser interface{ Close() error }
+	dbDone := beginCLIPhase("local_db_open")
+	if len(pending) == 0 {
+		fmt.Println("TITLE_DB=SKIPPED_ALL_CACHED")
+		dbDone(nil)
+	} else if !*noLocalDB {
+		titleDB, dbErr := prepareLocalTitleLookup(context.Background(), *r18Dump)
+		dbDone(dbErr)
+		if dbErr != nil {
+			fmt.Printf("LOCAL_TITLE_SEARCH=UNAVAILABLE TITLE_DB=UNAVAILABLE error=%q; using web fallback\n", dbErr.Error())
+			resolver = scrape.NewTitleCatalogResolver(cfg)
+		} else {
+			titleDBCloser = titleDB
+			resolver = scrape.NewTitleCatalogResolverWithLookup(cfg, titleDB)
+			fmt.Println("TITLE_RESOLUTION=LOCAL_R18_THEN_JEV_THEN_WEB")
+		}
+	} else {
+		dbDone(nil)
+		resolver = scrape.NewTitleCatalogResolver(cfg)
+		fmt.Println("TITLE_RESOLUTION=WEB_ONLY")
+	}
+	if titleDBCloser != nil {
+		defer func() { _ = titleDBCloser.Close() }()
+	}
+
 	workerCount := *workers
 	if workerCount > len(pending) {
 		workerCount = len(pending)
 	}
 
 	var wg sync.WaitGroup
+	var firstSearch sync.Once
 	for i := 0; i < workerCount; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for taskIndex := range jobs {
 				task := tasks[taskIndex]
+				var searchDone func(error)
+				firstSearch.Do(func() { searchDone = beginCLIPhase("first_title_search") })
 				resolved := resolveTitleWithRetry(resolver, task.Title, *timeout, *maxAttempts, *retryBase, nil)
+				if searchDone != nil {
+					searchDone(resolved.Err)
+				}
 				result := titleWorkResult{
 					TaskIndex: taskIndex,
 					CatalogID: resolved.CatalogID,
@@ -291,13 +316,12 @@ func main() {
 	lastReported := doneFiles
 	const checkpointEvery = 25
 	pendingCheckpoint := 0
+	fmt.Printf("PROGRESS=%d/%d ACCEPTED=%d REJECTED=%d ERRORS=%d CACHED=%d\n", doneFiles, len(unique), accepted.Load(), rejected.Load(), failed.Load(), cachedFiles.Load())
 	lastCheckpoint := time.Now()
-	if doneFiles > 0 {
-		fmt.Printf("PROGRESS=%d/%d ACCEPTED=%d REJECTED=%d ERRORS=%d CACHED=%d\n",
-			doneFiles, len(unique), accepted.Load(), rejected.Load(), failed.Load(), cachedFiles.Load())
-	}
+
 	for res := range results {
 		task := tasks[res.TaskIndex]
+		fmt.Printf("TITLE_RESULT=%s candidate=%s elapsed_ms=%d\n", res.Status, res.CatalogID, res.ElapsedMS)
 		groupSize := len(task.Indices)
 		for _, fileIndex := range task.Indices {
 			item := unique[fileIndex]
@@ -327,8 +351,11 @@ func main() {
 		}
 		pendingCheckpoint++
 		if pendingCheckpoint >= checkpointEvery || time.Since(lastCheckpoint) >= 2*time.Second {
-			if err := store.checkpoint(); err != nil {
-				fatalf("checkpoint state: %v", err)
+			checkpointDone := beginCLIPhase("state_checkpoint")
+			checkpointErr := store.checkpoint()
+			checkpointDone(checkpointErr)
+			if checkpointErr != nil {
+				fatalf("checkpoint state: %v", checkpointErr)
 			}
 			pendingCheckpoint = 0
 			lastCheckpoint = time.Now()
@@ -360,25 +387,64 @@ func main() {
 	if err := os.WriteFile(filepath.Join(absOut, "summary.txt"), []byte(summary), 0o644); err != nil {
 		fatalf("write summary: %v", err)
 	}
+	fmt.Printf("SUMMARY FILES_TOTAL=%d ACCEPTED=%d REJECTED=%d ERRORS=%d CACHED=%d ELAPSED_MS=%d\n", len(files), accepted.Load(), rejected.Load(), failed.Load(), cachedFiles.Load(), elapsed.Milliseconds())
 	fmt.Print(summary)
 }
 
-func scanMedia(root string) ([]fileItem, error) {
+func scanMedia(root string) ([]fileItem, error) { return scanMediaWithProgress(root, nil) }
+
+func scanMediaWithProgress(root string, progress func(int)) ([]fileItem, error) {
+	return scanMediaOptions(root, progress, true)
+}
+
+// Title caching/grouping only use the path/title. In skip-duplicate mode,
+// avoid one filesystem stat per video (especially costly on mounted drives).
+// Size=-1 and mtime=0 explicitly mark uncollected bookkeeping metadata.
+func scanMediaForTitles(root string, progress func(int)) ([]fileItem, error) {
+	return scanMediaOptions(root, progress, false)
+}
+
+func scanMediaOptions(root string, progress func(int), metadata bool) ([]fileItem, error) {
 	var out []fileItem
-	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+	lastReport := time.Now()
+	report := func() {
+		if progress != nil {
+			progress(len(out))
+		}
+		lastReport = time.Now()
+	}
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if info.IsDir() {
+		if progress != nil && time.Since(lastReport) >= 250*time.Millisecond {
+			report()
+		}
+		if entry.IsDir() {
 			return nil
 		}
-		if _, ok := mediaExt[strings.ToLower(filepath.Ext(info.Name()))]; !ok {
+		if _, ok := mediaExt[strings.ToLower(filepath.Ext(entry.Name()))]; !ok {
 			return nil
 		}
-		out = append(out, fileItem{Path: path, Size: info.Size(), ModTimeNS: info.ModTime().UnixNano()})
+		item := fileItem{Path: path, Size: -1}
+		if metadata {
+			info, err := entry.Info()
+			if err != nil {
+				return err
+			}
+			item.Size = info.Size()
+			item.ModTimeNS = info.ModTime().UnixNano()
+		}
+		out = append(out, item)
+		if len(out) == 1 {
+			report()
+		}
 		return nil
 	})
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	if err == nil {
+		report()
+	}
 	return out, err
 }
 

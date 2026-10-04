@@ -135,3 +135,17 @@ func TestTransientErrorIsNotTerminalCache(t *testing.T) {
 		t.Fatal("transient error must be retried on next run")
 	}
 }
+
+func TestLegacyLocalAcceptCacheIsRevalidated(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	if err := os.WriteFile(path, []byte(`{"version":2,"titles":{"作品":{"status":"accepted","catalog_id":"ABC-123"}},"files":{"movie.mp4":{"status":"accepted","catalog_id":"ABC-123"}}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := newStateStore(path, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := store.cachedTitle("作品"); ok || len(store.state.Files) != 0 {
+		t.Fatal("old local accept cache bypasses mandatory Jev")
+	}
+}
