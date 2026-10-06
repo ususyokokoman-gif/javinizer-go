@@ -11,31 +11,43 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/javinizer/javinizer-go/internal/scrape"
 )
 
-const bulkStateVersion = 6
+const bulkStateVersion = 7
 
 type titleResolver interface {
 	Resolve(context.Context, string) (string, error)
 }
 
+type titleDecisionResolver interface {
+	ResolveDecision(context.Context, string) (scrape.TitleResolutionDecision, error)
+}
+
 type fileStateRecord struct {
-	Size      int64  `json:"size"`
-	ModTimeNS int64  `json:"mtime_ns"`
-	Title     string `json:"title"`
-	CatalogID string `json:"catalog_id,omitempty"`
-	Status    string `json:"status"`
-	Error     string `json:"error,omitempty"`
-	Attempts  int    `json:"attempts,omitempty"`
-	UpdatedAt string `json:"updated_at"`
+	Size          int64  `json:"size"`
+	ModTimeNS     int64  `json:"mtime_ns"`
+	Title         string `json:"title"`
+	CatalogID     string `json:"catalog_id,omitempty"`
+	Status        string `json:"status"`
+	Method        string `json:"method,omitempty"`
+	Reason        string `json:"reason,omitempty"`
+	PolicyVersion int    `json:"decision_policy_version"`
+	Error         string `json:"error,omitempty"`
+	Attempts      int    `json:"attempts,omitempty"`
+	UpdatedAt     string `json:"updated_at"`
 }
 
 type titleCacheRecord struct {
-	CatalogID string `json:"catalog_id,omitempty"`
-	Status    string `json:"status"`
-	Error     string `json:"error,omitempty"`
-	Attempts  int    `json:"attempts,omitempty"`
-	UpdatedAt string `json:"updated_at"`
+	CatalogID     string `json:"catalog_id,omitempty"`
+	Status        string `json:"status"`
+	Method        string `json:"method,omitempty"`
+	Reason        string `json:"reason,omitempty"`
+	PolicyVersion int    `json:"decision_policy_version"`
+	Error         string `json:"error,omitempty"`
+	Attempts      int    `json:"attempts,omitempty"`
+	UpdatedAt     string `json:"updated_at"`
 }
 
 type persistentState struct {
@@ -88,37 +100,11 @@ func loadPersistentState(path string) (persistentState, error) {
 		if err := json.Unmarshal(raw, &st); err != nil {
 			continue
 		}
-		if st.Version == 1 {
-			// v2 introduces the local R18 title resolver. Keep prior accepted
-			// mappings, but discard old negative results so titles rejected by
-			// the web-only strategy get one chance through the local fast path.
-			for title, rec := range st.Titles {
-				if rec.Status != "accepted" {
-					delete(st.Titles, title)
-				}
-			}
-			for path, rec := range st.Files {
-				if rec.Status != "accepted" {
-					delete(st.Files, path)
-				}
-			}
-			st.Version = bulkStateVersion
-		} else if st.Version == 2 {
-			// v2 allowed lexical-only local acceptance without Jev provenance.
-			// Re-resolve once under the mandatory gate; retain batching and resume
-			// for all results written by this version.
+		if st.Version != bulkStateVersion {
+			// v7 から「確定 / 要確認 / 未特定 / エラー」の安全判定へ変更した。
+			// 旧版の accepted には Web/Jev 単独採用が含まれ得るため、誤った
+			// ファイル名変更を防ぐ目的で旧判定は一切引き継がず再判定する。
 			st = emptyPersistentState()
-		} else if st.Version == 3 || st.Version == 4 || st.Version == 5 {
-			// v3 treated an arbitrary filename stem as a human title and also
-			// auto-accepted a single regex-looking catalog substring. v4 fixed
-			// that classification but still keyed state by query text alone. v5
-			// includes the input kind in the key so opaque IDs and real titles
-			// can never contaminate each other's durable cache entries. v6 also
-			// preserves edition/product suffixes such as BOD/TK/EC and therefore
-			// invalidates any suffix-collapsed accepted result from v5.
-			st = emptyPersistentState()
-		} else if st.Version != bulkStateVersion {
-			return persistentState{}, fmt.Errorf("unsupported state version %d in %s", st.Version, candidate)
 		}
 		if st.Files == nil {
 			st.Files = make(map[string]fileStateRecord)
@@ -138,13 +124,13 @@ func (s *stateStore) cachedTitle(title string) (titleCacheRecord, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	r, ok := s.state.Titles[title]
-	if !ok || !isTerminalStatus(r.Status) {
+	if !ok || !isTerminalStatus(r.Status) || r.PolicyVersion != scrape.TitleDecisionPolicyVersion {
 		return titleCacheRecord{}, false
 	}
 	return r, true
 }
 
-func (s *stateStore) recordTask(task titleWork, files []fileItem, status, catalogID, errorText string, attempts int) error {
+func (s *stateStore) recordTask(task titleWork, files []fileItem, status, catalogID, method, reason, errorText string, attempts int) error {
 	if s == nil {
 		return fmt.Errorf("state store is nil")
 	}
@@ -159,11 +145,14 @@ func (s *stateStore) recordTask(task titleWork, files []fileItem, status, catalo
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	s.state.Titles[task.cacheKey()] = titleCacheRecord{
-		CatalogID: catalogID,
-		Status:    status,
-		Error:     errorText,
-		Attempts:  attempts,
-		UpdatedAt: now,
+		CatalogID:     catalogID,
+		Status:        status,
+		Method:        method,
+		Reason:        reason,
+		PolicyVersion: scrape.TitleDecisionPolicyVersion,
+		Error:         errorText,
+		Attempts:      attempts,
+		UpdatedAt:     now,
 	}
 	for _, index := range task.Indices {
 		if index < 0 || index >= len(files) {
@@ -171,14 +160,17 @@ func (s *stateStore) recordTask(task titleWork, files []fileItem, status, catalo
 		}
 		f := files[index]
 		s.state.Files[f.Path] = fileStateRecord{
-			Size:      f.Size,
-			ModTimeNS: f.ModTimeNS,
-			Title:     task.Title,
-			CatalogID: catalogID,
-			Status:    status,
-			Error:     errorText,
-			Attempts:  attempts,
-			UpdatedAt: now,
+			Size:          f.Size,
+			ModTimeNS:     f.ModTimeNS,
+			Title:         task.Title,
+			CatalogID:     catalogID,
+			Status:        status,
+			Method:        method,
+			Reason:        reason,
+			PolicyVersion: scrape.TitleDecisionPolicyVersion,
+			Error:         errorText,
+			Attempts:      attempts,
+			UpdatedAt:     now,
 		}
 	}
 	s.dirty = true
@@ -256,6 +248,9 @@ func writeSyncedFile(path string, data []byte, mode os.FileMode) error {
 
 type retryResolution struct {
 	CatalogID string
+	Status    string
+	Method    string
+	Reason    string
 	Err       error
 	Attempts  int
 	ElapsedMS int64
@@ -269,13 +264,27 @@ func resolveTitleWithRetry(resolver titleResolver, title string, timeout time.Du
 	if maxAttempts < 1 {
 		maxAttempts = 1
 	}
-	var id string
+	var id, status, method, reason string
 	var err error
 	attempts := 0
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		attempts = attempt
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
-		id, err = resolver.Resolve(ctx, title)
+		if detailed, ok := resolver.(titleDecisionResolver); ok {
+			decision, decisionErr := detailed.ResolveDecision(ctx, title)
+			id = decision.CatalogID
+			status = string(decision.Status)
+			method = decision.Method
+			reason = decision.Reason
+			err = decisionErr
+		} else {
+			id, err = resolver.Resolve(ctx, title)
+			status = resolutionStatus(err)
+			if err == nil {
+				method = "従来方式"
+				reason = "従来方式の判定結果です。"
+			}
+		}
 		cancel()
 		if err == nil {
 			break
@@ -287,8 +296,14 @@ func resolveTitleWithRetry(resolver titleResolver, title string, timeout time.Du
 		fmt.Printf("RETRY title=%q attempt=%d/%d delay=%s error=%v\n", title, attempt+1, maxAttempts, delay, err)
 		sleep(delay)
 	}
+	if status == "" {
+		status = resolutionStatus(err)
+	}
 	return retryResolution{
 		CatalogID: id,
+		Status:    status,
+		Method:    method,
+		Reason:    reason,
 		Err:       err,
 		Attempts:  attempts,
 		ElapsedMS: time.Since(began).Milliseconds(),
@@ -359,28 +374,37 @@ func isTransientResolutionError(err error) bool {
 
 func resolutionStatus(err error) string {
 	if err == nil {
-		return "accepted"
+		return "confirmed"
 	}
 	if isTransientResolutionError(err) {
 		return "error"
 	}
 	msg := strings.ToLower(err.Error())
-	permanentRejects := []string{
+	reviewPatterns := []string{
 		"jev rejected catalog-id candidate",
-		"no sufficiently corroborated catalog-id candidate",
 		"ambiguous title matches multiple verified catalog ids",
 		"conflicts with web evidence",
+	}
+	for _, pattern := range reviewPatterns {
+		if strings.Contains(msg, pattern) {
+			return "review"
+		}
+	}
+	unknownPatterns := []string{
+		"no sufficiently corroborated catalog-id candidate",
+		"opaque filename key produced no sufficiently corroborated catalog-id candidate",
 		"title is empty",
 		"candidate is empty",
+		"no title candidates found",
 	}
-	for _, pattern := range permanentRejects {
+	for _, pattern := range unknownPatterns {
 		if strings.Contains(msg, pattern) {
-			return "rejected"
+			return "unknown"
 		}
 	}
 	return "error"
 }
 
 func isTerminalStatus(status string) bool {
-	return status == "accepted" || status == "rejected"
+	return status == "confirmed" || status == "review" || status == "unknown"
 }

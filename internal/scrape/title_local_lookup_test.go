@@ -267,3 +267,59 @@ func TestUniqueExactLocalTitlePreservesEditionSuffixWithoutJev(t *testing.T) {
 		t.Fatalf("id=%q ok=%v", id, ok)
 	}
 }
+
+func TestResolveDecisionConfirmsVerifiedCatalogID(t *testing.T) {
+	lookup := &richFakeTitleLookup{
+		movie: &models.DumpMovie{DVDID: "IPX-072", TitleJa: "狙われた通学路 共謀痴漢電車 桃乃木かな"},
+	}
+	resolver := NewTitleCatalogResolverWithLookup(&Config{}, lookup)
+	decision, err := resolver.ResolveDecision(context.Background(), "IPX-072.mp4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Status != TitleDecisionConfirmed || decision.CatalogID != "IPX-072" || !decision.AutoOrganizeEligible() {
+		t.Fatalf("decision=%+v", decision)
+	}
+}
+
+func TestResolveDecisionCatalogWithoutLocalProofStaysReview(t *testing.T) {
+	resolver := NewTitleCatalogResolver(&Config{})
+	decision, err := resolver.ResolveDecision(context.Background(), "IPX-072.mp4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Status != TitleDecisionReview || decision.CatalogID != "IPX-072" || decision.AutoOrganizeEligible() {
+		t.Fatalf("decision=%+v", decision)
+	}
+}
+
+func TestResolveDecisionUniqueExactLocalTitleIsConfirmed(t *testing.T) {
+	lookup := &fakeTitleLookup{matches: []models.DumpTitleMatch{{
+		DVDID:   "IPX-072",
+		TitleJa: "狙われた通学路 共謀痴漢電車 桃乃木かな",
+		Score:   1.0,
+	}}}
+	resolver := NewTitleCatalogResolverWithLookup(&Config{}, lookup)
+	decision, err := resolver.ResolveDecision(context.Background(), "狙われた通学路 共謀痴漢電車 桃乃木かな")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Status != TitleDecisionConfirmed || decision.CatalogID != "IPX-072" || !decision.AutoOrganizeEligible() {
+		t.Fatalf("decision=%+v", decision)
+	}
+}
+
+func TestResolveDecisionDuplicateExactLocalTitlesRequireReview(t *testing.T) {
+	lookup := &fakeTitleLookup{matches: []models.DumpTitleMatch{
+		{DVDID: "ABC-001", TitleJa: "同一タイトル", Score: 1.0},
+		{DVDID: "ABC-002", TitleJa: "同一タイトル", Score: 1.0},
+	}}
+	resolver := NewTitleCatalogResolverWithLookup(&Config{}, lookup)
+	decision, err := resolver.ResolveDecision(context.Background(), "同一タイトル")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Status != TitleDecisionReview || decision.AutoOrganizeEligible() {
+		t.Fatalf("decision=%+v", decision)
+	}
+}

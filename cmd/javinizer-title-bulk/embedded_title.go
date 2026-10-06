@@ -93,6 +93,7 @@ func probeEmbeddedTitle(ctx context.Context, mediaPath string) (string, error) {
 func resolveWorkWithRetry(resolver titleResolver, mediaPath, input string, timeout time.Duration, maxAttempts int, baseDelay time.Duration, sleep func(time.Duration)) retryResolution {
 	began := time.Now()
 	prepared := scrape.PrepareTitleResolutionInput(input)
+	var embeddedReview *retryResolution
 	if prepared.Kind == scrape.TitleInputOpaque {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		embedded, probeErr := embeddedTitleProbe(ctx, mediaPath)
@@ -102,15 +103,38 @@ func resolveWorkWithRetry(resolver titleResolver, mediaPath, input string, timeo
 			if embeddedPrepared.Query != "" && embeddedPrepared.Kind != scrape.TitleInputOpaque && !strings.EqualFold(embeddedPrepared.Query, prepared.Query) {
 				fmt.Printf("EMBEDDED_TITLE=HIT input=%q title=%q\n", prepared.Query, embeddedPrepared.Query)
 				resolved := resolveTitleWithRetry(resolver, embeddedPrepared.Query, timeout, maxAttempts, baseDelay, sleep)
-				if resolved.Err == nil {
+				if resolved.Status == "confirmed" {
 					resolved.ElapsedMS = time.Since(began).Milliseconds()
 					return resolved
 				}
-				fmt.Printf("EMBEDDED_TITLE=FALLBACK input=%q error=%v\n", prepared.Query, resolved.Err)
+				if resolved.Status == "review" {
+					copy := resolved
+					embeddedReview = &copy
+				}
+				if resolved.Err != nil {
+					fmt.Printf("EMBEDDED_TITLE=FALLBACK input=%q error=%v\n", prepared.Query, resolved.Err)
+				} else {
+					fmt.Printf("EMBEDDED_TITLE=FALLBACK input=%q status=%s\n", prepared.Query, resolved.Status)
+				}
 			}
 		}
 	}
 	resolved := resolveTitleWithRetry(resolver, prepared.Query, timeout, maxAttempts, baseDelay, sleep)
+	// 埋込タイトル側に要確認候補があり、元の不明ID側では何も分からなかった場合は
+	// 候補だけ残す。ただし「確定」へ昇格はさせない。
+	if embeddedReview != nil && (resolved.Status == "unknown" || resolved.Status == "error") {
+		resolved = *embeddedReview
+	}
+	// 埋込タイトルと不明ID逆引きで別候補が出た場合は矛盾として候補を消し、
+	// 要確認に固定する。多数決でどちらかを選ばない。
+	if embeddedReview != nil && resolved.Status == "review" &&
+		strings.TrimSpace(embeddedReview.CatalogID) != "" &&
+		strings.TrimSpace(resolved.CatalogID) != "" &&
+		!strings.EqualFold(embeddedReview.CatalogID, resolved.CatalogID) {
+		resolved.CatalogID = ""
+		resolved.Method = "埋込タイトルと不明IDの照合"
+		resolved.Reason = "埋込タイトル由来候補と不明ID逆引き候補が一致しないため、自動整理せず要確認とします。"
+	}
 	resolved.ElapsedMS = time.Since(began).Milliseconds()
 	return resolved
 }

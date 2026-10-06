@@ -12,7 +12,8 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
-const sharedResolutionCacheVersion = 2
+// 1000番台は安全判定方式専用。旧v1/v2の「accepted」キャッシュと名前空間を分離する。
+const sharedResolutionCacheVersion = 1000 + scrape.TitleDecisionPolicyVersion
 
 type resolutionCache struct {
 	db   *sql.DB

@@ -40,15 +40,20 @@ type duplicateRecord struct {
 }
 
 type resultRecord struct {
-	Path      string `json:"path"`
-	Filename  string `json:"filename"`
-	Title     string `json:"title"`
-	CatalogID string `json:"catalog_id,omitempty"`
-	Status    string `json:"status"`
-	Error     string `json:"error,omitempty"`
-	ElapsedMS int64  `json:"elapsed_ms"`
-	Attempts  int    `json:"attempts,omitempty"`
-	Cached    bool   `json:"cached,omitempty"`
+	Path                  string `json:"path"`
+	Filename              string `json:"filename"`
+	Title                 string `json:"title"`
+	CatalogID             string `json:"catalog_id,omitempty"`
+	Status                string `json:"status"`
+	StatusJapanese        string `json:"status_ja"`
+	Method                string `json:"method,omitempty"`
+	Reason                string `json:"reason,omitempty"`
+	DecisionPolicyVersion int    `json:"decision_policy_version"`
+	AutoOrganizeEligible  bool   `json:"auto_organize_eligible"`
+	Error                 string `json:"error,omitempty"`
+	ElapsedMS             int64  `json:"elapsed_ms"`
+	Attempts              int    `json:"attempts,omitempty"`
+	Cached                bool   `json:"cached,omitempty"`
 }
 
 type titleWork struct {
@@ -65,6 +70,8 @@ type titleWorkResult struct {
 	TaskIndex int
 	CatalogID string
 	Status    string
+	Method    string
+	Reason    string
 	Error     string
 	ElapsedMS int64
 	Attempts  int
@@ -211,8 +218,9 @@ func main() {
 	rows := make([]resultRecord, len(unique))
 	jobs := make(chan int)
 	results := make(chan titleWorkResult, *workers*2)
-	var accepted atomic.Int64
-	var rejected atomic.Int64
+	var confirmed atomic.Int64
+	var review atomic.Int64
+	var unknown atomic.Int64
 	var failed atomic.Int64
 	var cachedFiles atomic.Int64
 
@@ -224,9 +232,15 @@ func main() {
 			if id, hit, cacheErr := resolutionCache.Get(task.Kind, task.Title); cacheErr != nil {
 				fatalf("read shared resolution cache: %v", cacheErr)
 			} else if hit {
-				cached = titleCacheRecord{CatalogID: id, Status: "accepted", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+				cached = titleCacheRecord{
+					CatalogID: id,
+					Status:    "confirmed",
+					Method:    "安全確認済み結果の再利用",
+					Reason:    "現行の安全判定方式で確定済みの結果を再利用しました。",
+					UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+				}
 				ok = true
-				if err := store.recordTask(task, unique, "accepted", id, "", 0); err != nil {
+				if err := store.recordTask(task, unique, "confirmed", id, cached.Method, cached.Reason, "", 0); err != nil {
 					fatalf("record shared-cache hit in state: %v", err)
 				}
 			}
@@ -240,21 +254,30 @@ func main() {
 		for _, fileIndex := range task.Indices {
 			item := unique[fileIndex]
 			rows[fileIndex] = resultRecord{
-				Path:      item.Path,
-				Filename:  filepath.Base(item.Path),
-				Title:     task.Title,
-				CatalogID: cached.CatalogID,
-				Status:    cached.Status,
-				Error:     cached.Error,
-				Attempts:  cached.Attempts,
-				Cached:    true,
+				Path:                  item.Path,
+				Filename:              filepath.Base(item.Path),
+				Title:                 task.Title,
+				CatalogID:             cached.CatalogID,
+				Status:                cached.Status,
+				StatusJapanese:        decisionStatusJapanese(cached.Status),
+				Method:                cached.Method,
+				Reason:                cached.Reason,
+				DecisionPolicyVersion: scrape.TitleDecisionPolicyVersion,
+				AutoOrganizeEligible:  cached.Status == "confirmed",
+				Error:                 cached.Error,
+				Attempts:              cached.Attempts,
+				Cached:                true,
 			}
 		}
 		switch cached.Status {
-		case "accepted":
-			accepted.Add(int64(groupSize))
-		case "rejected":
-			rejected.Add(int64(groupSize))
+		case "confirmed":
+			confirmed.Add(int64(groupSize))
+		case "review":
+			review.Add(int64(groupSize))
+		case "unknown":
+			unknown.Add(int64(groupSize))
+		default:
+			failed.Add(int64(groupSize))
 		}
 		cachedFiles.Add(int64(groupSize))
 	}
@@ -319,7 +342,9 @@ func main() {
 				result := titleWorkResult{
 					TaskIndex: taskIndex,
 					CatalogID: resolved.CatalogID,
-					Status:    resolutionStatus(resolved.Err),
+					Status:    resolved.Status,
+					Method:    resolved.Method,
+					Reason:    resolved.Reason,
 					ElapsedMS: resolved.ElapsedMS,
 					Attempts:  resolved.Attempts,
 				}
@@ -344,40 +369,50 @@ func main() {
 	lastReported := doneFiles
 	const checkpointEvery = 25
 	pendingCheckpoint := 0
-	fmt.Printf("PROGRESS=%d/%d ACCEPTED=%d REJECTED=%d ERRORS=%d CACHED=%d\n", doneFiles, len(unique), accepted.Load(), rejected.Load(), failed.Load(), cachedFiles.Load())
+	fmt.Printf("PROGRESS=%d/%d CONFIRMED=%d REVIEW=%d UNKNOWN=%d ERRORS=%d CACHED=%d\n",
+		doneFiles, len(unique), confirmed.Load(), review.Load(), unknown.Load(), failed.Load(), cachedFiles.Load())
 	lastCheckpoint := time.Now()
 
 	for res := range results {
 		task := tasks[res.TaskIndex]
-		fmt.Printf("TITLE_RESULT=%s candidate=%s elapsed_ms=%d\n", res.Status, res.CatalogID, res.ElapsedMS)
+		fmt.Printf("DECISION_RESULT=%s candidate=%s elapsed_ms=%d\n", res.Status, res.CatalogID, res.ElapsedMS)
 		groupSize := len(task.Indices)
 		for _, fileIndex := range task.Indices {
 			item := unique[fileIndex]
 			row := resultRecord{
-				Path:      item.Path,
-				Filename:  filepath.Base(item.Path),
-				Title:     task.Title,
-				CatalogID: res.CatalogID,
-				Status:    res.Status,
-				Error:     res.Error,
-				ElapsedMS: res.ElapsedMS,
-				Attempts:  res.Attempts,
+				Path:                  item.Path,
+				Filename:              filepath.Base(item.Path),
+				Title:                 task.Title,
+				CatalogID:             res.CatalogID,
+				Status:                res.Status,
+				StatusJapanese:        decisionStatusJapanese(res.Status),
+				Method:                res.Method,
+				Reason:                res.Reason,
+				DecisionPolicyVersion: scrape.TitleDecisionPolicyVersion,
+				AutoOrganizeEligible:  res.Status == "confirmed",
+				Error:                 res.Error,
+				ElapsedMS:             res.ElapsedMS,
+				Attempts:              res.Attempts,
 			}
 			rows[fileIndex] = row
 		}
 
 		switch res.Status {
-		case "accepted":
-			accepted.Add(int64(groupSize))
-		case "rejected":
-			rejected.Add(int64(groupSize))
+		case "confirmed":
+			confirmed.Add(int64(groupSize))
+		case "review":
+			review.Add(int64(groupSize))
+		case "unknown":
+			unknown.Add(int64(groupSize))
 		default:
 			failed.Add(int64(groupSize))
 		}
-		if err := store.recordTask(task, unique, res.Status, res.CatalogID, res.Error, res.Attempts); err != nil {
+		if err := store.recordTask(task, unique, res.Status, res.CatalogID, res.Method, res.Reason, res.Error, res.Attempts); err != nil {
 			fatalf("record state: %v", err)
 		}
-		if res.Status == "accepted" && strings.TrimSpace(res.CatalogID) != "" {
+		// 共有キャッシュへ保存するのは「確定」だけ。要確認・未特定は
+		// 将来の判定改善や別ソース追加で再評価できるよう共有確定結果にしない。
+		if res.Status == "confirmed" && strings.TrimSpace(res.CatalogID) != "" {
 			if err := resolutionCache.Put(task.Kind, task.Title, res.CatalogID); err != nil {
 				fatalf("write shared resolution cache: %v", err)
 			}
@@ -398,8 +433,8 @@ func main() {
 		if doneFiles-lastReported >= 25 || doneFiles == len(unique) {
 			elapsed := time.Since(started).Seconds()
 			rate := float64(doneFiles) / elapsed
-			fmt.Printf("PROGRESS=%d/%d ACCEPTED=%d REJECTED=%d ERRORS=%d CACHED=%d RATE=%.2f_files_per_sec\n",
-				doneFiles, len(unique), accepted.Load(), rejected.Load(), failed.Load(), cachedFiles.Load(), rate)
+			fmt.Printf("PROGRESS=%d/%d CONFIRMED=%d REVIEW=%d UNKNOWN=%d ERRORS=%d CACHED=%d RATE=%.2f_files_per_sec\n",
+				doneFiles, len(unique), confirmed.Load(), review.Load(), unknown.Load(), failed.Load(), cachedFiles.Load(), rate)
 			lastReported = doneFiles
 		}
 	}
@@ -414,13 +449,18 @@ func main() {
 	elapsed := time.Since(started)
 	rate := float64(len(rows)) / elapsed.Seconds()
 	summary := fmt.Sprintf(
-		"status=PASS\ninput_root=%s\nstate_file=%s\nresume=%t\nfiles_total=%d\nduplicates_confirmed=%d\nfiles_judged=%d\ntitles_unique=%d\ntitles_cached=%d\ntitles_resolved_live=%d\naccepted=%d\nrejected=%d\nerrors=%d\ncached_files=%d\nworkers=%d\nworkers_used=%d\nmax_attempts=%d\nretry_base_delay=%s\nstate_checkpoint_every=%d\nelapsed_seconds=%.2f\nfiles_per_second=%.3f\n",
-		absRoot, resolvedStatePath, *resume, len(files), len(duplicates), len(rows), len(tasks), cachedTitles, len(pending), accepted.Load(), rejected.Load(), failed.Load(), cachedFiles.Load(), *workers, workerCount, *maxAttempts, retryBase.String(), checkpointEvery, elapsed.Seconds(), rate,
+		"処理結果=完了\n判定基準版=%d\n対象フォルダ=%s\n状態ファイル=%s\n再開機能=%t\n総ファイル数=%d\n重複確認数=%d\n判定対象数=%d\n検索単位数=%d\n再利用した検索単位=%d\n今回判定した検索単位=%d\n確定=%d\n要確認=%d\n未特定=%d\nエラー=%d\n自動整理対象=%d\n再利用ファイル=%d\n並列数=%d\n実使用並列数=%d\n最大試行回数=%d\n再試行基本待機=%s\n保存間隔=%d\n処理時間秒=%.2f\n1秒あたり処理数=%.3f\n",
+		scrape.TitleDecisionPolicyVersion, absRoot, resolvedStatePath, *resume, len(files), len(duplicates), len(rows), len(tasks), cachedTitles, len(pending),
+		confirmed.Load(), review.Load(), unknown.Load(), failed.Load(), confirmed.Load(), cachedFiles.Load(),
+		*workers, workerCount, *maxAttempts, retryBase.String(), checkpointEvery, elapsed.Seconds(), rate,
 	)
-	if err := os.WriteFile(filepath.Join(absOut, "summary.txt"), []byte(summary), 0o644); err != nil {
-		fatalf("write summary: %v", err)
+	for _, name := range []string{"summary.txt", "処理概要.txt"} {
+		if err := os.WriteFile(filepath.Join(absOut, name), []byte(summary), 0o644); err != nil {
+			fatalf("write summary: %v", err)
+		}
 	}
-	fmt.Printf("SUMMARY FILES_TOTAL=%d ACCEPTED=%d REJECTED=%d ERRORS=%d CACHED=%d ELAPSED_MS=%d\n", len(files), accepted.Load(), rejected.Load(), failed.Load(), cachedFiles.Load(), elapsed.Milliseconds())
+	fmt.Printf("SUMMARY FILES_TOTAL=%d CONFIRMED=%d REVIEW=%d UNKNOWN=%d ERRORS=%d CACHED=%d ELAPSED_MS=%d\n",
+		len(files), confirmed.Load(), review.Load(), unknown.Load(), failed.Load(), cachedFiles.Load(), elapsed.Milliseconds())
 	fmt.Print(summary)
 }
 
@@ -658,18 +698,30 @@ func writeResults(outDir string, rows []resultRecord) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
 	w := csv.NewWriter(f)
-	defer w.Flush()
-	if err := w.Write([]string{"path", "filename", "title", "catalog_id", "status", "error", "elapsed_ms", "attempts", "cached"}); err != nil {
+	if err := w.Write([]string{"path", "filename", "title", "catalog_id", "status", "status_ja", "method", "reason", "decision_policy_version", "auto_organize_eligible", "error", "elapsed_ms", "attempts", "cached"}); err != nil {
+		_ = f.Close()
 		return err
 	}
 	for _, r := range rows {
-		if err := w.Write([]string{r.Path, r.Filename, r.Title, r.CatalogID, r.Status, r.Error, fmt.Sprintf("%d", r.ElapsedMS), fmt.Sprintf("%d", r.Attempts), fmt.Sprintf("%t", r.Cached)}); err != nil {
+		if err := w.Write([]string{
+			r.Path, r.Filename, r.Title, r.CatalogID, r.Status, r.StatusJapanese,
+			r.Method, r.Reason, fmt.Sprintf("%d", r.DecisionPolicyVersion), fmt.Sprintf("%t", r.AutoOrganizeEligible), r.Error,
+			fmt.Sprintf("%d", r.ElapsedMS), fmt.Sprintf("%d", r.Attempts), fmt.Sprintf("%t", r.Cached),
+		}); err != nil {
+			_ = f.Close()
 			return err
 		}
 	}
-	return w.Error()
+	w.Flush()
+	if err := w.Error(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return writeJapaneseDecisionReports(outDir, rows)
 }
 
 func min64(a, b int64) int64 {

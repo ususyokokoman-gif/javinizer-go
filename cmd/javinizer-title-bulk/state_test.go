@@ -66,7 +66,7 @@ func TestResolveTitleWithRetryPermanentRejectDoesNotRetry(t *testing.T) {
 	if got.Attempts != 1 || r.calls != 1 {
 		t.Fatalf("attempts=%d calls=%d, want 1/1", got.Attempts, r.calls)
 	}
-	if resolutionStatus(got.Err) != "rejected" {
+	if resolutionStatus(got.Err) != "review" {
 		t.Fatalf("status=%q", resolutionStatus(got.Err))
 	}
 }
@@ -96,7 +96,7 @@ func TestStateCheckpointAndTerminalCache(t *testing.T) {
 	}
 	files := []fileItem{{Path: "movie.mp4", Size: 123, ModTimeNS: 456}}
 	task := titleWork{Kind: scrape.TitleInputTitle, Title: "作品タイトル", Indices: []int{0}}
-	if err := store.recordTask(task, files, "accepted", "ABC-123", "", 2); err != nil {
+	if err := store.recordTask(task, files, "confirmed", "ABC-123", "ローカルタイトル完全一致", "完全一致", "", 2); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
@@ -114,7 +114,7 @@ func TestStateCheckpointAndTerminalCache(t *testing.T) {
 	if !ok {
 		t.Fatal("expected terminal cached title")
 	}
-	if cached.CatalogID != "ABC-123" || cached.Status != "accepted" || cached.Attempts != 2 {
+	if cached.CatalogID != "ABC-123" || cached.Status != "confirmed" || cached.Attempts != 2 {
 		t.Fatalf("cached=%+v", cached)
 	}
 }
@@ -127,7 +127,7 @@ func TestTransientErrorIsNotTerminalCache(t *testing.T) {
 	}
 	files := []fileItem{{Path: "movie.mp4", Size: 123, ModTimeNS: 456}}
 	task := titleWork{Kind: scrape.TitleInputTitle, Title: "作品タイトル", Indices: []int{0}}
-	if err := store.recordTask(task, files, "error", "", "HTTP 429", 3); err != nil {
+	if err := store.recordTask(task, files, "error", "", "外部検索", "通信エラー", "HTTP 429", 3); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.checkpoint(); err != nil {
@@ -161,5 +161,26 @@ func TestRateLimitErrorsAreNotImmediatelyRetried(t *testing.T) {
 		if isTransientResolutionError(errors.New(message)) {
 			t.Fatalf("rate limit error must not trigger per-item retry: %q", message)
 		}
+	}
+}
+
+func TestStateCacheRejectsDifferentDecisionPolicyVersion(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	task := titleWork{Kind: scrape.TitleInputTitle, Title: "作品タイトル", Indices: []int{0}}
+	st := emptyPersistentState()
+	st.Titles[task.cacheKey()] = titleCacheRecord{
+		CatalogID:     "ABC-123",
+		Status:        "confirmed",
+		PolicyVersion: scrape.TitleDecisionPolicyVersion + 1,
+	}
+	if err := writePersistentState(path, st); err != nil {
+		t.Fatal(err)
+	}
+	store, err := newStateStore(path, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := store.cachedTitle(task.cacheKey()); ok {
+		t.Fatal("異なる判定基準版の確定結果を再利用してはいけない")
 	}
 }
