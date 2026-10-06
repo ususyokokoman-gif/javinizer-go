@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/javinizer/javinizer-go/internal/models"
@@ -22,6 +23,34 @@ type fakeTitleLookup struct {
 func (f *fakeTitleLookup) SearchByTitle(_ context.Context, _ string, _ int) ([]models.DumpTitleMatch, error) {
 	f.calls++
 	return f.matches, f.err
+}
+
+type richFakeTitleLookup struct {
+	fakeTitleLookup
+	movie *models.DumpMovie
+}
+
+func (f *richFakeTitleLookup) LookupByDVDID(context.Context, string) (string, error) {
+	return "", models.ErrDumpMiss
+}
+
+func (f *richFakeTitleLookup) LookupByContentID(context.Context, string) (string, error) {
+	return "", models.ErrDumpMiss
+}
+
+func (f *richFakeTitleLookup) MatchByDisplayID(context.Context, string) ([]models.DumpMatch, error) {
+	return nil, models.ErrDumpMiss
+}
+
+func (f *richFakeTitleLookup) LookupMovie(context.Context, string) (*models.DumpMovie, error) {
+	if f.movie == nil {
+		return nil, models.ErrDumpMiss
+	}
+	return f.movie, nil
+}
+
+func (f *richFakeTitleLookup) Stats(context.Context) (models.DumpStats, error) {
+	return models.DumpStats{}, nil
 }
 
 func TestTitleCatalogResolverUsesLocalTitleThenJevWithoutWeb(t *testing.T) {
@@ -187,5 +216,38 @@ func TestTitleCatalogResolverInitializesDirectJavDBSource(t *testing.T) {
 	}
 	if !r.scraper.cfg.DisableHeadlessTitleSearch {
 		t.Fatal("bulk resolver must disable headless public-search retry")
+	}
+}
+
+func TestLocalTitleEvidenceIncludesFullDumpMetadata(t *testing.T) {
+	lookup := &richFakeTitleLookup{
+		fakeTitleLookup: fakeTitleLookup{matches: []models.DumpTitleMatch{{
+			ContentID: "118ipx00072",
+			DVDID:     "IPX-072",
+			TitleJa:   "狙われた通学路 共謀痴漢電車",
+			TitleEn:   "Targeted School Route",
+			Score:     1.0,
+		}}},
+		movie: &models.DumpMovie{
+			ContentID:   "118ipx00072",
+			DVDID:       "IPX-072",
+			TitleJa:     "狙われた通学路 共謀痴漢電車",
+			TitleEn:     "Targeted School Route",
+			ReleaseDate: "2018-08-19",
+			Runtime:     120,
+			Maker:       &models.DumpNamedEntity{NameJa: "アイデアポケット"},
+			Actresses:   []models.DumpActress{{NameKanji: "桃乃木かな"}},
+		},
+	}
+	resolver := NewTitleCatalogResolverWithLookup(&Config{}, lookup)
+	evidence := resolver.buildLocalTitleEvidence(context.Background(), lookup.matches)
+	if len(evidence) < 2 {
+		t.Fatalf("evidence=%#v, want full metadata plus title-index evidence", evidence)
+	}
+	full := evidence[0].Snippet
+	for _, want := range []string{"catalog_id=IPX-072", "桃乃木かな", "アイデアポケット", "release_date=2018-08-19", "runtime_mins=120"} {
+		if !strings.Contains(full, want) {
+			t.Fatalf("full metadata evidence missing %q: %s", want, full)
+		}
 	}
 }

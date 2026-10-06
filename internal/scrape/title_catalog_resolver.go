@@ -183,26 +183,7 @@ func (r *TitleCatalogResolver) resolveFromLocalTitle(ctx context.Context, title 
 		}
 	}
 
-	evidence := make([]titleWebSearchResult, 0, minInt(5, len(matches)))
-	for i, match := range matches {
-		if i >= 5 {
-			break
-		}
-		displayTitle := strings.TrimSpace(match.TitleJa)
-		if displayTitle == "" {
-			displayTitle = strings.TrimSpace(match.TitleEn)
-		}
-		evidence = append(evidence, titleWebSearchResult{
-			Title: displayTitle,
-			Snippet: fmt.Sprintf(
-				"r18.dev local title index candidate catalog ID %s; title_en=%s; lexical_score=%.3f",
-				match.DVDID,
-				strings.TrimSpace(match.TitleEn),
-				match.Score,
-			),
-			URL: "https://r18.dev/",
-		})
-	}
+	evidence := r.buildLocalTitleEvidence(ctx, matches)
 
 	if !r.scraper.jevCatalogGateEnabled() {
 		logging.Infof("LOCAL_TITLE_SEARCH=MISS reason=jev_unavailable")
@@ -217,6 +198,94 @@ func (r *TitleCatalogResolver) resolveFromLocalTitle(ctx context.Context, title 
 	}
 	logging.Infof("LOCAL_TITLE_SEARCH=HIT candidate=%s; web search skipped", id)
 	return id, true
+}
+
+func (r *TitleCatalogResolver) buildLocalTitleEvidence(ctx context.Context, matches []models.DumpTitleMatch) []titleWebSearchResult {
+	evidence := make([]titleWebSearchResult, 0, minInt(5, len(matches))+1)
+	for i, match := range matches {
+		if i >= 5 {
+			break
+		}
+		displayTitle := strings.TrimSpace(match.TitleJa)
+		if displayTitle == "" {
+			displayTitle = strings.TrimSpace(match.TitleEn)
+		}
+		evidence = append(evidence, titleWebSearchResult{
+			Title: displayTitle,
+			Snippet: fmt.Sprintf(
+				"r18.dev local title-index record; catalog_id=%s; title_ja=%s; title_en=%s; lexical_score=%.3f",
+				strings.TrimSpace(match.DVDID),
+				strings.TrimSpace(match.TitleJa),
+				strings.TrimSpace(match.TitleEn),
+				match.Score,
+			),
+			URL: "https://r18.dev/",
+		})
+	}
+
+	// SearchByTitle intentionally returns a compact candidate row. When the same
+	// local store also exposes full dump metadata, enrich the top candidate with
+	// independent identity fields before asking Jev. This keeps exact/near-exact
+	// local matches from being rejected merely because the gate saw only a title
+	// string and no actress/maker/release context.
+	dump, ok := r.titleLookup.(models.R18DevDumpLookup)
+	if !ok || len(matches) == 0 || strings.TrimSpace(matches[0].DVDID) == "" {
+		return evidence
+	}
+	movie, err := dump.LookupMovie(ctx, matches[0].DVDID)
+	if err != nil || movie == nil {
+		if err != nil && !errors.Is(err, models.ErrDumpMiss) {
+			logging.Warnf("[scrape] local metadata enrichment failed for %s: %v", matches[0].DVDID, err)
+		}
+		return evidence
+	}
+
+	actresses := make([]string, 0, len(movie.Actresses))
+	for _, actress := range movie.Actresses {
+		name := firstNonEmpty(strings.TrimSpace(actress.NameKanji), strings.TrimSpace(actress.NameKana), strings.TrimSpace(actress.NameRomaji))
+		if name != "" {
+			actresses = append(actresses, name)
+		}
+	}
+	maker := ""
+	if movie.Maker != nil {
+		maker = firstNonEmpty(strings.TrimSpace(movie.Maker.NameJa), strings.TrimSpace(movie.Maker.NameEn))
+	}
+	label := ""
+	if movie.Label != nil {
+		label = firstNonEmpty(strings.TrimSpace(movie.Label.NameJa), strings.TrimSpace(movie.Label.NameEn))
+	}
+	series := ""
+	if movie.Series != nil {
+		series = firstNonEmpty(strings.TrimSpace(movie.Series.NameJa), strings.TrimSpace(movie.Series.NameEn))
+	}
+	evidence = append([]titleWebSearchResult{{
+		Title: firstNonEmpty(strings.TrimSpace(movie.TitleJa), strings.TrimSpace(movie.TitleEn)),
+		Snippet: fmt.Sprintf(
+			"r18.dev local full metadata record; catalog_id=%s; content_id=%s; title_ja=%s; title_en=%s; actresses=%s; maker=%s; label=%s; series=%s; release_date=%s; runtime_mins=%d",
+			strings.TrimSpace(movie.DVDID),
+			strings.TrimSpace(movie.ContentID),
+			strings.TrimSpace(movie.TitleJa),
+			strings.TrimSpace(movie.TitleEn),
+			strings.Join(actresses, ", "),
+			maker,
+			label,
+			series,
+			strings.TrimSpace(movie.ReleaseDate),
+			movie.Runtime,
+		),
+		URL: "https://r18.dev/",
+	}}, evidence...)
+	return evidence
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func minInt(a, b int) int {
