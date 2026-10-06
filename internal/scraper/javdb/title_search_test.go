@@ -2,6 +2,7 @@ package javdb
 
 import (
 	"context"
+	"errors"
 	"net/url"
 	"strings"
 	"testing"
@@ -56,7 +57,7 @@ func TestSearchTitleCandidatesWorksWhenMetadataScraperDisabled(t *testing.T) {
 	searchURL := "https://javdb.test/search?q=" + url.QueryEscape(title) + "&f=all"
 	client := resty.New()
 	client.SetTransport(&staticRoundTripper{responses: map[string]string{
-		searchURL: `<html><body><div class="movie-list"><div class="item"><a class="box" href="/v/good"><div class="uid">SSIS-001</div><div class="video-title">SSIS-001 ` + title + `</div></a></div></div></body></html>`,
+		searchURL:                   `<html><body><div class="movie-list"><div class="item"><a class="box" href="/v/good"><div class="uid">SSIS-001</div><div class="video-title">SSIS-001 ` + title + `</div></a></div></div></body></html>`,
 		"https://javdb.test/v/good": `<html><body><h2 class="title is-4"><strong>SSIS-001</strong> ` + title + `</h2><div class="movie-panel-info"><div class="panel-block"><strong>Maker:</strong><div class="value"><a>S1</a></div></div></div></body></html>`,
 	}})
 
@@ -90,5 +91,25 @@ func TestJavDBTitleSimilarityRejectsUnrelatedTitle(t *testing.T) {
 	}
 	if got := javDBTitleSimilarity("完全な日本語タイトル", "SSIS-001 完全な日本語タイトル"); got < 0.75 {
 		t.Fatalf("matching title similarity = %.3f, want >= 0.75", got)
+	}
+}
+
+func TestSearchTitleCandidatesDetectsGeographicBlockPage(t *testing.T) {
+	const title = "狙われた通学路 共謀痴漢電車 桃乃木かな"
+	searchURL := "https://javdb.test/search?q=" + url.QueryEscape(title) + "&f=all"
+	client := resty.New()
+	client.SetTransport(&staticRoundTripper{responses: map[string]string{
+		searchURL: `<html><body>Due to copyright restrictions, access to this site is prohibited in the country where your internet is located.</body></html>`,
+	}})
+	s := &scraper{
+		client:      client,
+		enabled:     true,
+		baseURL:     "https://javdb.test",
+		rateLimiter: ratelimit.NewLimiter(0),
+		settings:    models.ScraperSettings{Enabled: true},
+	}
+	_, err := s.SearchTitleCandidates(context.Background(), title, 3)
+	if !errors.Is(err, ErrTitleSearchGeoBlocked) {
+		t.Fatalf("err=%v, want ErrTitleSearchGeoBlocked", err)
 	}
 }

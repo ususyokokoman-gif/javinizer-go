@@ -2,10 +2,12 @@ package scrape
 
 import (
 	"context"
+	"errors"
 	"strings"
 
 	"github.com/javinizer/javinizer-go/internal/logging"
 	"github.com/javinizer/javinizer-go/internal/models"
+	"github.com/javinizer/javinizer-go/internal/scraper/javdb"
 )
 
 // titleCandidateSearcher is intentionally optional. Sources that can search by
@@ -29,6 +31,10 @@ func (s *Scraper) collectDirectTitleEvidence(ctx context.Context, title string) 
 
 	out := make([]titleWebSearchResult, 0, 4)
 	for _, sourceName := range []string{"javdb"} {
+		if reason, disabled := s.directTitleDisabled.Load(sourceName); disabled {
+			logging.Infof("[scrape] direct title source %s skipped for this run: %v", sourceName, reason)
+			continue
+		}
 		instance, ok := s.registry.GetInstance(sourceName)
 		if !ok || instance == nil {
 			continue
@@ -39,6 +45,11 @@ func (s *Scraper) collectDirectTitleEvidence(ctx context.Context, title string) 
 		}
 		results, err := searcher.SearchTitleCandidates(ctx, title, 3)
 		if err != nil {
+			if errors.Is(err, javdb.ErrTitleSearchGeoBlocked) {
+				s.directTitleDisabled.Store(sourceName, "geographic access restriction")
+				logging.Infof("[scrape] direct title source %s disabled for this run after geographic access restriction", sourceName)
+				continue
+			}
 			logging.Infof("[scrape] direct title source %s failed for %q: %v", sourceName, truncateRunes(title, 100), err)
 			continue
 		}

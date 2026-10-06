@@ -12,7 +12,7 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
-const sharedResolutionCacheVersion = 1
+const sharedResolutionCacheVersion = 2
 
 type resolutionCache struct {
 	db   *sql.DB

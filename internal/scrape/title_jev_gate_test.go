@@ -26,7 +26,7 @@ func TestJevCatalogGateAcceptsAtThreshold(t *testing.T) {
 	s := &Scraper{
 		httpClient: server.Client(),
 		cfg: &Config{
-			JevCatalogEnabled: true,
+			JevCatalogEnabled:   true,
 			JevCatalogAPIKey:    "test-key",
 			JevCatalogThreshold: 0.80,
 			JevCatalogModel:     "jev-test",
@@ -70,7 +70,7 @@ func TestJevCatalogGateRejectsBelowThreshold(t *testing.T) {
 	s := &Scraper{
 		httpClient: server.Client(),
 		cfg: &Config{
-			JevCatalogEnabled: true,
+			JevCatalogEnabled:   true,
 			JevCatalogAPIKey:    "test-key",
 			JevCatalogThreshold: 0.80,
 			JevCatalogModel:     "jev-test",
@@ -96,7 +96,7 @@ func TestJevCatalogGateFailsClosedOnAPIError(t *testing.T) {
 	s := &Scraper{
 		httpClient: server.Client(),
 		cfg: &Config{
-			JevCatalogEnabled: true,
+			JevCatalogEnabled:   true,
 			JevCatalogAPIKey:    "test-key",
 			JevCatalogThreshold: 0.80,
 			JevCatalogModel:     "jev-test",
@@ -175,7 +175,6 @@ func TestBuildJevCatalogEvidenceKeepsRelevantTrustedEvidence(t *testing.T) {
 		t.Fatalf("catalog IDs = %#v", got[0].CatalogIDs)
 	}
 }
-
 
 func TestJevCatalogGateEnabledWithoutKeyFailsClosed(t *testing.T) {
 	s := &Scraper{cfg: &Config{
@@ -259,5 +258,38 @@ func TestJevCatalogGateClearRejectDoesNotRetry(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Fatalf("Jev calls=%d, want 1 for clear reject", calls)
+	}
+}
+
+func TestBuildJevCatalogEvidenceMarksTrustedURLIdentity(t *testing.T) {
+	got := buildJevCatalogEvidence("狙われた通学路 共謀痴漢電車 桃乃木かな", "IPX-072", []titleWebSearchResult{{
+		Title:   "狙われた通学路 共謀痴漢電車 桃乃木かな IPX-072",
+		Snippet: "品番 IPX-072",
+		URL:     "https://www.dmm.co.jp/digital/videoa/-/detail/=/cid=ipx00072/",
+	}})
+	if len(got) != 1 {
+		t.Fatalf("evidence=%#v", got)
+	}
+	if got[0].Source != "dmm" || got[0].TitleCoverage < 0.9 {
+		t.Fatalf("evidence=%#v", got[0])
+	}
+	if len(got[0].URLCatalogIDs) != 1 || got[0].URLCatalogIDs[0] != "IPX-072" {
+		t.Fatalf("url catalog ids=%v", got[0].URLCatalogIDs)
+	}
+}
+
+func TestSummarizeJevCatalogEvidenceCountsRepeatedHighCoverageConsensus(t *testing.T) {
+	title := "わたし、犯されにゆきます。～弟想いの美しき姉編～"
+	results := []titleWebSearchResult{
+		{Title: "SNIS-323 " + title, URL: "https://example.com/a"},
+		{Title: "SNIS-323 " + title, URL: "https://example.net/b"},
+		{Title: "別作品 SNIS-397", URL: "https://www.dmm.co.jp/mono/dvd/-/detail/=/cid=snis397/"},
+	}
+	got := summarizeJevCatalogEvidence(title, "SNIS-323", results)
+	if got.CandidateOccurrences != 2 || got.HighCoverageOccurrences != 2 || got.DistinctResultHosts != 2 {
+		t.Fatalf("summary=%+v", got)
+	}
+	if len(got.ConflictingHighCoverageIDs) != 0 {
+		t.Fatalf("low-coverage unrelated ID became conflict: %+v", got)
 	}
 }

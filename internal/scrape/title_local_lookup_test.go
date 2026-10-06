@@ -251,3 +251,19 @@ func TestLocalTitleEvidenceIncludesFullDumpMetadata(t *testing.T) {
 		}
 	}
 }
+
+func TestUniqueExactLocalTitlePreservesEditionSuffixWithoutJev(t *testing.T) {
+	lookup := &fakeTitleLookup{matches: []models.DumpTitleMatch{
+		{DVDID: "SONE-999BOD", TitleJa: "おもてなしするって言ったのに、大量肉棒でちんボコされドM本性丸出しでアヘイキ大乱交しちゃった 音無鈴 （BOD）", Score: 1.0},
+		{DVDID: "SONE-999", TitleJa: "おもてなしするって言ったのに、大量肉棒でちんボコされドM本性丸出しでアヘイキ大乱交しちゃった 音無鈴", Score: 0.989},
+	}}
+	resolver := NewTitleCatalogResolverWithLookup(&Config{JevCatalogEnabled: true, JevCatalogAPIKey: "unused"}, lookup)
+	resolver.scraper.httpClient = jevLookupHTTPClientFunc(func(*http.Request) (*http.Response, error) {
+		t.Fatal("unique exact local title must not call Jev/Web")
+		return nil, nil
+	})
+	id, ok := resolver.resolveFromLocalTitle(context.Background(), "おもてなしするって言ったのに、大量肉棒でちんボコされドM本性丸出しでアヘイキ大乱交しちゃった 音無鈴 （BOD）")
+	if !ok || id != "SONE-999BOD" {
+		t.Fatalf("id=%q ok=%v", id, ok)
+	}
+}

@@ -172,15 +172,25 @@ func (r *TitleCatalogResolver) resolveFromLocalTitle(ctx context.Context, title 
 		logging.Infof("LOCAL_TITLE_SEARCH=MISS reason=weak_candidate title=%q top_score=%.3f", truncateRunes(title, 100), top.Score)
 		return "", false
 	}
+	uniqueExact := top.Score >= 0.999999
 	if len(matches) > 1 {
-		margin := top.Score - matches[1].Score
-		// Distinct IDs with effectively the same lexical score are genuinely
-		// ambiguous even when both titles look exact. Do not pick one by sort
-		// order.
-		if margin < 0.025 {
-			logging.Infof("LOCAL_TITLE_SEARCH=MISS reason=ambiguous top=%s score=%.3f second=%s score=%.3f", top.DVDID, top.Score, matches[1].DVDID, matches[1].Score)
+		second := matches[1]
+		// A single exact normalized title match is deterministic identity
+		// evidence. A close-but-not-exact base edition (for example SONE-999
+		// beside SONE-999BOD) must not erase an exact edition-specific match.
+		if uniqueExact && second.Score >= 0.999999 && !strings.EqualFold(strings.TrimSpace(top.DVDID), strings.TrimSpace(second.DVDID)) {
+			uniqueExact = false
+		}
+		margin := top.Score - second.Score
+		if !uniqueExact && margin < 0.025 {
+			logging.Infof("LOCAL_TITLE_SEARCH=MISS reason=ambiguous top=%s score=%.3f second=%s score=%.3f", top.DVDID, top.Score, second.DVDID, second.Score)
 			return "", false
 		}
+	}
+	if uniqueExact {
+		id := strings.TrimSpace(top.DVDID)
+		logging.Infof("LOCAL_TITLE_SEARCH=HIT candidate=%s reason=unique_exact_local_title; Jev/web skipped", id)
+		return id, true
 	}
 
 	evidence := r.buildLocalTitleEvidence(ctx, matches)

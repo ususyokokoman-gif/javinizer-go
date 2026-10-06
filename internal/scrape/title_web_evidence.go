@@ -213,6 +213,79 @@ func candidateTrustedSources(id string, results []titleWebSearchResult) map[stri
 	return sources
 }
 
+func candidateHasDeterministicTrustedWebIdentity(title, id string, results []titleWebSearchResult) bool {
+	want := catalogComparable(id)
+	if want == "" || strings.TrimSpace(title) == "" {
+		return false
+	}
+	found := false
+	for _, result := range mergeTitleWebResults(results) {
+		if trustedCatalogSource(result.URL) == "" {
+			continue
+		}
+		combined := strings.TrimSpace(result.Title + " " + result.Snippet)
+		coverage := queryCoverage(title, combined)
+		if coverage < 0.90 {
+			continue
+		}
+		for _, urlID := range extractTrustedURLCatalogCandidates(result.URL) {
+			key := catalogComparable(urlID)
+			if key == "" {
+				continue
+			}
+			if key == want {
+				found = true
+				continue
+			}
+			return false
+		}
+	}
+	return found
+}
+
+func candidateHasDeterministicWebConsensus(title, id string, results []titleWebSearchResult) bool {
+	want := catalogComparable(id)
+	if want == "" || strings.TrimSpace(title) == "" {
+		return false
+	}
+
+	hosts := make(map[string]struct{})
+	matches := 0
+	for _, result := range mergeTitleWebResults(results) {
+		combined := strings.TrimSpace(result.Title + " " + result.Snippet)
+		if queryCoverage(title, combined) < 0.90 {
+			continue
+		}
+
+		ids := append([]string{}, extractCatalogCandidates(combined)...)
+		ids = append(ids, extractTrustedURLCatalogCandidates(result.URL)...)
+		ids = uniqueNormalizedCatalogIDs(ids)
+
+		hasCandidate := false
+		for _, candidate := range ids {
+			if catalogComparable(candidate) == want {
+				hasCandidate = true
+				break
+			}
+		}
+		if hasCandidate {
+			matches++
+			if parsed, err := url.Parse(strings.TrimSpace(result.URL)); err == nil {
+				if host := strings.ToLower(strings.TrimSpace(parsed.Hostname())); host != "" {
+					hosts[host] = struct{}{}
+				}
+			}
+			continue
+		}
+		// A different catalog ID on an equally high-coverage result is a
+		// contradiction. Do not let repeated low-quality mirrors outvote it.
+		if len(ids) > 0 {
+			return false
+		}
+	}
+	return matches >= 3 && len(hosts) >= 3
+}
+
 func candidateHasTrustedEvidence(id string, results []titleWebSearchResult) bool {
 	return len(candidateTrustedSources(id, results)) > 0
 }

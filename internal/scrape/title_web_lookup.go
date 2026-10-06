@@ -116,6 +116,12 @@ func (s *Scraper) lookupCatalogIDOnWeb(ctx context.Context, title string) (strin
 		}
 		logging.Infof("[scrape] web search provider=%s query=%q results=%d merged=%d", providerEvidence, truncateRunes(q, 120), len(results), len(merged))
 		if id, ok := chooseCatalogCandidate(title, merged); ok {
+			if s.cfg != nil && s.cfg.PreferNonGoogleTitleSearch &&
+				(candidateHasDeterministicTrustedWebIdentity(title, id, merged) ||
+					candidateHasDeterministicWebConsensus(title, id, merged)) {
+				logging.Infof("[scrape] bulk deterministic web identity accepted candidate=%s; Jev/additional variants skipped", id)
+				return id, nil
+			}
 			if !directOK {
 				// chooseCatalogCandidate already requires either trusted evidence
 				// or repeated, high-scoring independent result cards with a clear
@@ -189,6 +195,13 @@ func (s *Scraper) tryJevFastTitlePath(ctx context.Context, title, query string) 
 		if !ok {
 			logging.Infof("[scrape] Jev fast path provider=%s produced no decisive candidate yet", provider.name)
 			continue
+		}
+
+		if s.cfg != nil && s.cfg.PreferNonGoogleTitleSearch &&
+			(candidateHasDeterministicTrustedWebIdentity(title, id, evidence) ||
+				candidateHasDeterministicWebConsensus(title, id, evidence)) {
+			logging.Infof("[scrape] bulk deterministic web identity accepted candidate=%s after provider=%s; Jev skipped", id, provider.name)
+			return id, true, nil
 		}
 
 		logging.Infof("[scrape] Jev fast path candidate=%s after provider=%s; validating immediately", id, provider.name)

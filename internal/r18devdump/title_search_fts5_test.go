@@ -135,3 +135,23 @@ func TestSearchByTitleEnglishAndIndexUpgrade(t *testing.T) {
 		t.Fatalf("miss: %v", err)
 	}
 }
+
+func TestTitleSimilarityStripsCommonPrefixSymmetrically(t *testing.T) {
+	title := "【数量限定】彼氏のじゃ満足出来なくて…帰省した実家でおじさんのデカチン沼にハマってしまいました。 山下紗和 パンティと写真付き"
+	if got := titleSimilarity(title, title); got != 1 {
+		t.Fatalf("score=%f, want 1", got)
+	}
+}
+
+func TestDedupeTitleMatchesPrefersHyphenatedCanonicalDisplayID(t *testing.T) {
+	got := dedupeTitleMatchesByDisplayID([]models.DumpTitleMatch{
+		{ContentID: "118abw366r", DVDID: "ABW366", TitleJa: "作品", Score: 1.0},
+		{ContentID: "118abw366", DVDID: "ABW-366", TitleJa: "作品", Score: 1.0},
+	})
+	if len(got) != 1 {
+		t.Fatalf("len=%d, want 1: %+v", len(got), got)
+	}
+	if got[0].DVDID != "ABW-366" {
+		t.Fatalf("DVDID=%q, want ABW-366", got[0].DVDID)
+	}
+}

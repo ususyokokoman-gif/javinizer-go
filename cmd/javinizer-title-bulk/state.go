@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-const bulkStateVersion = 5
+const bulkStateVersion = 6
 
 type titleResolver interface {
 	Resolve(context.Context, string) (string, error)
@@ -108,12 +108,14 @@ func loadPersistentState(path string) (persistentState, error) {
 			// Re-resolve once under the mandatory gate; retain batching and resume
 			// for all results written by this version.
 			st = emptyPersistentState()
-		} else if st.Version == 3 || st.Version == 4 {
+		} else if st.Version == 3 || st.Version == 4 || st.Version == 5 {
 			// v3 treated an arbitrary filename stem as a human title and also
 			// auto-accepted a single regex-looking catalog substring. v4 fixed
 			// that classification but still keyed state by query text alone. v5
 			// includes the input kind in the key so opaque IDs and real titles
-			// can never contaminate each other's durable cache entries.
+			// can never contaminate each other's durable cache entries. v6 also
+			// preserves edition/product suffixes such as BOD/TK/EC and therefore
+			// invalidates any suffix-collapsed accepted result from v5.
 			st = emptyPersistentState()
 		} else if st.Version != bulkStateVersion {
 			return persistentState{}, fmt.Errorf("unsupported state version %d in %s", st.Version, candidate)

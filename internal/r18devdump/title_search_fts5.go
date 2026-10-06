@@ -189,8 +189,10 @@ func (s *Store) SearchByTitle(ctx context.Context, query string, limit int) ([]m
 	out = dedupeTitleMatchesByDisplayID(out)
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Score == out[j].Score {
-			if isPreferredDisplayID(out[i].DVDID) != isPreferredDisplayID(out[j].DVDID) {
-				return isPreferredDisplayID(out[i].DVDID)
+			iRank := displayIDPreference(out[i].DVDID)
+			jRank := displayIDPreference(out[j].DVDID)
+			if iRank != jRank {
+				return iRank > jRank
 			}
 			return out[i].DVDID < out[j].DVDID
 		}
@@ -273,7 +275,7 @@ func bestTitleSimilarity(query, ja, en string) float64 {
 
 func titleSimilarity(query, candidate string) float64 {
 	q := normalizeTitleSearch(stripCommonFilenamePrefix(query))
-	c := normalizeTitleSearch(candidate)
+	c := normalizeTitleSearch(stripCommonFilenamePrefix(candidate))
 	if q == "" || c == "" {
 		return 0
 	}
@@ -319,7 +321,7 @@ func titleSimilarity(query, candidate string) float64 {
 
 func wildcardTitleSimilarity(query, candidate string) float64 {
 	q := normalizeTitleSearchWildcard(stripCommonFilenamePrefix(query))
-	c := normalizeTitleSearchWildcard(candidate)
+	c := normalizeTitleSearchWildcard(stripCommonFilenamePrefix(candidate))
 	if len(q) == 0 || len(c) == 0 {
 		return 0
 	}
@@ -420,7 +422,7 @@ func dedupeTitleMatchesByDisplayID(in []models.DumpTitleMatch) []models.DumpTitl
 			continue
 		}
 		if m.Score > old.Score ||
-			(m.Score == old.Score && isPreferredDisplayID(m.DVDID) && !isPreferredDisplayID(old.DVDID)) {
+			(m.Score == old.Score && displayIDPreference(m.DVDID) > displayIDPreference(old.DVDID)) {
 			best[group] = m
 		}
 	}
@@ -455,13 +457,20 @@ func stripServicePrefix(key string) string {
 	return key
 }
 
-func isPreferredDisplayID(id string) bool {
+func displayIDPreference(id string) int {
 	id = strings.TrimSpace(id)
 	if strings.Contains(id, "-") {
-		return true
+		return 2
 	}
 	r := []rune(id)
-	return len(r) > 0 && unicode.IsLetter(r[0])
+	if len(r) > 0 && unicode.IsLetter(r[0]) {
+		return 1
+	}
+	return 0
+}
+
+func isPreferredDisplayID(id string) bool {
+	return displayIDPreference(id) > 0
 }
 
 func normalizeTitleSearch(s string) string {

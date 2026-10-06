@@ -2,6 +2,7 @@ package javdb
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -12,6 +13,8 @@ import (
 	"github.com/javinizer/javinizer-go/internal/scraperutil"
 	"golang.org/x/text/unicode/norm"
 )
+
+var ErrTitleSearchGeoBlocked = errors.New("JavDB title search unavailable in current network region")
 
 type titleCandidate struct {
 	title string
@@ -47,6 +50,11 @@ func (s *scraper) SearchTitleCandidates(ctx context.Context, title string, limit
 	html, err := s.fetchPageCtx(ctx, searchURL)
 	if err != nil {
 		return nil, fmt.Errorf("JavDB title search failed: %w", err)
+	}
+	lowerHTML := strings.ToLower(html)
+	if strings.Contains(lowerHTML, "access to this site is prohibited in the country") ||
+		strings.Contains(html, "本站禁止了你的網路所在國家的訪問") {
+		return nil, ErrTitleSearchGeoBlocked
 	}
 	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
 	if err != nil {

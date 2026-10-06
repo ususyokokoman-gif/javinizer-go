@@ -61,3 +61,16 @@ func TestStandaloneCatalogExtractionRejectsSubstringInsideOpaqueKey(t *testing.T
 		t.Fatalf("standalone ids=%v, want [RE-0275I]", ids)
 	}
 }
+
+func TestCatalogSuffixVariantsArePreserved(t *testing.T) {
+	for _, want := range []string{"START-487-EC", "FSDSS-999TK", "SNIS-999BOD", "SONE-999BOD"} {
+		got := PrepareTitleResolutionInput(want + ".mp4")
+		if got.Kind != TitleInputCatalog {
+			t.Fatalf("%s kind=%s, want catalog", want, got.Kind)
+		}
+		ids := extractStandaloneCatalogCandidates(got.Query)
+		if len(ids) != 1 || ids[0] != want {
+			t.Fatalf("%s ids=%v", want, ids)
+		}
+	}
+}
