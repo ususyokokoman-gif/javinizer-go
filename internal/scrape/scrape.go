@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/javinizer/javinizer-go/internal/aggregator"
@@ -129,17 +130,19 @@ type ScraperInstanceResolver interface {
 
 // Scraper is the scrape engine that orchestrates cache lookup, multi-source scraping, and aggregation for a single MovieID.
 type Scraper struct {
-	registry            ScraperInstanceResolver
-	aggregator          aggregator.AggregatorInterface
-	actressRepo         database.ActressRepositoryInterface
-	movieRepo           database.MovieRepositoryInterface
-	httpClient          httpclientiface.HTTPClient
-	cfg                 *Config
-	translator          Translator
-	fs                  afero.Fs
-	breaker             *scraperCircuitBreaker
-	titleSearchGuard    *titleSearchProviderGuard
-	directTitleDisabled sync.Map
+	registry                 ScraperInstanceResolver
+	aggregator               aggregator.AggregatorInterface
+	actressRepo              database.ActressRepositoryInterface
+	movieRepo                database.MovieRepositoryInterface
+	httpClient               httpclientiface.HTTPClient
+	cfg                      *Config
+	translator               Translator
+	fs                       afero.Fs
+	breaker                  *scraperCircuitBreaker
+	titleSearchGuard         *titleSearchProviderGuard
+	directTitleDisabled      sync.Map
+	titleWebSearchRequests   atomic.Int64
+	titleWebHTTP429Responses atomic.Int64
 }
 
 // ScraperInterface is the contract for executing a scrape operation.

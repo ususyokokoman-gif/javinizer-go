@@ -130,6 +130,8 @@ func (s *Scraper) fetchDuckDuckGoTitleSearch(ctx context.Context, query string) 
 		}
 		setTitleSearchHeaders(req, s)
 
+		s.recordTitleWebSearchRequest()
+
 		resp, err := s.httpClient.Do(req)
 		if err != nil {
 			lastErr = fmt.Errorf("DuckDuckGo request failed: %w", err)
@@ -142,6 +144,7 @@ func (s *Scraper) fetchDuckDuckGoTitleSearch(ctx context.Context, query string) 
 		body := resp.Body
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			if resp.StatusCode == http.StatusTooManyRequests {
+				s.recordTitleWebHTTP429()
 				s.markTitleSearchRateLimited("duckduckgo", resp.Header.Get("Retry-After"))
 			}
 			body.Close()
@@ -191,6 +194,8 @@ func (s *Scraper) fetchYahooJapanTitleSearch(ctx context.Context, query string) 
 	}
 	setTitleSearchHeaders(req, s)
 
+	s.recordTitleWebSearchRequest()
+
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("Yahoo Japan request failed: %w", err)
@@ -201,6 +206,7 @@ func (s *Scraper) fetchYahooJapanTitleSearch(ctx context.Context, query string) 
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		if resp.StatusCode == http.StatusTooManyRequests {
+			s.recordTitleWebHTTP429()
 			s.markTitleSearchRateLimited("yahoojp", resp.Header.Get("Retry-After"))
 		}
 		return nil, fmt.Errorf("Yahoo Japan returned HTTP %d", resp.StatusCode)
@@ -295,6 +301,8 @@ func (s *Scraper) fetchBingTitleSearch(ctx context.Context, query string) ([]tit
 	}
 	setTitleSearchHeaders(req, s)
 
+	s.recordTitleWebSearchRequest()
+
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("Bing request failed: %w", err)
@@ -305,6 +313,7 @@ func (s *Scraper) fetchBingTitleSearch(ctx context.Context, query string) ([]tit
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		if resp.StatusCode == http.StatusTooManyRequests {
+			s.recordTitleWebHTTP429()
 			s.markTitleSearchRateLimited("bing", resp.Header.Get("Retry-After"))
 		}
 		return nil, fmt.Errorf("Bing returned HTTP %d", resp.StatusCode)

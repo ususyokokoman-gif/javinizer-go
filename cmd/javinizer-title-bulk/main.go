@@ -448,19 +448,26 @@ func main() {
 
 	elapsed := time.Since(started)
 	rate := float64(len(rows)) / elapsed.Seconds()
+	p50MS, p95MS := elapsedPercentiles(rows)
+	resolutionMetrics := scrape.TitleResolutionMetrics{}
+	if resolver != nil {
+		resolutionMetrics = resolver.Metrics()
+	}
 	summary := fmt.Sprintf(
-		"処理結果=完了\n判定基準版=%d\n対象フォルダ=%s\n状態ファイル=%s\n再開機能=%t\n総ファイル数=%d\n重複確認数=%d\n判定対象数=%d\n検索単位数=%d\n再利用した検索単位=%d\n今回判定した検索単位=%d\n確定=%d\n要確認=%d\n未特定=%d\nエラー=%d\n自動整理対象=%d\n再利用ファイル=%d\n並列数=%d\n実使用並列数=%d\n最大試行回数=%d\n再試行基本待機=%s\n保存間隔=%d\n処理時間秒=%.2f\n1秒あたり処理数=%.3f\n",
+		"処理結果=完了\n判定基準版=%d\n対象フォルダ=%s\n状態ファイル=%s\n再開機能=%t\n総ファイル数=%d\n重複確認数=%d\n判定対象数=%d\n検索単位数=%d\n再利用した検索単位=%d\n今回判定した検索単位=%d\n確定=%d\n要確認=%d\n未特定=%d\nエラー=%d\n自動整理対象=%d\n再利用ファイル=%d\n並列数=%d\n実使用並列数=%d\n最大試行回数=%d\n再試行基本待機=%s\n保存間隔=%d\n処理時間秒=%.2f\n1秒あたり処理数=%.3f\nP50=%dms\nP95=%dms\nWeb検索数=%d\n429件数=%d\n",
 		scrape.TitleDecisionPolicyVersion, absRoot, resolvedStatePath, *resume, len(files), len(duplicates), len(rows), len(tasks), cachedTitles, len(pending),
 		confirmed.Load(), review.Load(), unknown.Load(), failed.Load(), confirmed.Load(), cachedFiles.Load(),
 		*workers, workerCount, *maxAttempts, retryBase.String(), checkpointEvery, elapsed.Seconds(), rate,
+		p50MS, p95MS, resolutionMetrics.WebSearches, resolutionMetrics.HTTP429,
 	)
 	for _, name := range []string{"summary.txt", "処理概要.txt"} {
 		if err := os.WriteFile(filepath.Join(absOut, name), []byte(summary), 0o644); err != nil {
 			fatalf("write summary: %v", err)
 		}
 	}
-	fmt.Printf("SUMMARY FILES_TOTAL=%d CONFIRMED=%d REVIEW=%d UNKNOWN=%d ERRORS=%d CACHED=%d ELAPSED_MS=%d\n",
-		len(files), confirmed.Load(), review.Load(), unknown.Load(), failed.Load(), cachedFiles.Load(), elapsed.Milliseconds())
+	fmt.Printf("SUMMARY FILES_TOTAL=%d CONFIRMED=%d REVIEW=%d UNKNOWN=%d ERRORS=%d CACHED=%d ELAPSED_MS=%d P50_MS=%d P95_MS=%d WEB_SEARCHES=%d HTTP_429=%d\n",
+		len(files), confirmed.Load(), review.Load(), unknown.Load(), failed.Load(), cachedFiles.Load(), elapsed.Milliseconds(),
+		p50MS, p95MS, resolutionMetrics.WebSearches, resolutionMetrics.HTTP429)
 	fmt.Print(summary)
 }
 

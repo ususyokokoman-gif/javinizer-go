@@ -276,6 +276,8 @@ func (s *Scraper) fetchTitleWebSearch(ctx context.Context, provider, query strin
 	req.Header.Set("Accept", "text/html,application/xhtml+xml")
 	req.Header.Set("Accept-Language", "ja-JP,ja;q=0.9,en-US;q=0.7,en;q=0.5")
 
+	s.recordTitleWebSearchRequest()
+
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
 		if ctx.Err() != nil || !headlessAllowed {
@@ -292,6 +294,9 @@ func (s *Scraper) fetchTitleWebSearch(ctx context.Context, provider, query strin
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		if resp.StatusCode == http.StatusTooManyRequests {
+			s.recordTitleWebHTTP429()
+		}
 		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusForbidden {
 			s.markTitleSearchRateLimited("google", resp.Header.Get("Retry-After"))
 		}

@@ -165,6 +165,10 @@ func TestBulkGoogle429DoesNotLaunchHeadlessAndOpensCooldown(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected 429 error")
 	}
+	metrics := s.titleResolutionMetrics()
+	if metrics.WebSearches != 1 || metrics.HTTP429 != 1 {
+		t.Fatalf("metrics=%+v want WebSearches=1 HTTP429=1", metrics)
+	}
 	if browserCalls != 0 {
 		t.Fatalf("headless calls=%d, want 0", browserCalls)
 	}
@@ -178,5 +182,9 @@ func TestBulkGoogle429DoesNotLaunchHeadlessAndOpensCooldown(t *testing.T) {
 	}
 	if httpCalls != 1 {
 		t.Fatalf("HTTP calls after cooldown=%d, want still 1", httpCalls)
+	}
+	metrics = s.titleResolutionMetrics()
+	if metrics.WebSearches != 1 || metrics.HTTP429 != 1 {
+		t.Fatalf("metrics after cooldown=%+v want unchanged", metrics)
 	}
 }
