@@ -223,3 +223,13 @@ func TestExtractCatalogCandidatesRejectsCodecNoise(t *testing.T) {
 	got := extractCatalogCandidates("H264-1080 ABW-123 x265-2160")
 	require.Equal(t, []string{"ABW-123"}, got)
 }
+
+func TestExtractStandaloneCatalogCandidatesRejectsEmbeddedOpaqueSubstring(t *testing.T) {
+	got := extractStandaloneCatalogCandidates("re-0275iabcxyz_1280p")
+	require.Empty(t, got)
+}
+
+func TestExtractStandaloneCatalogCandidatesAcceptsSeparatedCatalogToken(t *testing.T) {
+	got := extractStandaloneCatalogCandidates("作品名 [IPX-072] 1080p")
+	require.Equal(t, []string{"IPX-072"}, got)
+}

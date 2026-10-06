@@ -27,6 +27,13 @@ type Config struct {
 	JevCatalogThreshold     float64
 	JevCatalogModel         string
 	JevCatalogEndpoint      string
+
+	// High-volume filename resolution policy. These are intentionally internal
+	// runtime switches rather than user-facing app config: the bulk resolver
+	// enables them to minimize public-search 429s without changing normal scrape
+	// behavior elsewhere.
+	PreferNonGoogleTitleSearch bool
+	DisableHeadlessTitleSearch bool
 }
 
 // Translator is the interface for applying metadata translation to a scraped Movie.

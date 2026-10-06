@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/javinizer/javinizer-go/internal/scrape"
 )
 
 type sequenceResolver struct {
@@ -31,7 +33,7 @@ func TestResolveTitleWithRetryTransientThenSuccess(t *testing.T) {
 		id  string
 		err error
 	}{
-		{"", errors.New("Google search returned HTTP 429")},
+		{"", errors.New("upstream returned HTTP 503")},
 		{"IPX-072", nil},
 	}}
 	var slept []time.Duration
@@ -93,7 +95,7 @@ func TestStateCheckpointAndTerminalCache(t *testing.T) {
 		t.Fatal(err)
 	}
 	files := []fileItem{{Path: "movie.mp4", Size: 123, ModTimeNS: 456}}
-	task := titleWork{Title: "作品タイトル", Indices: []int{0}}
+	task := titleWork{Kind: scrape.TitleInputTitle, Title: "作品タイトル", Indices: []int{0}}
 	if err := store.recordTask(task, files, "accepted", "ABC-123", "", 2); err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +110,7 @@ func TestStateCheckpointAndTerminalCache(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cached, ok := reloaded.cachedTitle("作品タイトル")
+	cached, ok := reloaded.cachedTitle(task.cacheKey())
 	if !ok {
 		t.Fatal("expected terminal cached title")
 	}
@@ -124,14 +126,14 @@ func TestTransientErrorIsNotTerminalCache(t *testing.T) {
 		t.Fatal(err)
 	}
 	files := []fileItem{{Path: "movie.mp4", Size: 123, ModTimeNS: 456}}
-	task := titleWork{Title: "作品タイトル", Indices: []int{0}}
+	task := titleWork{Kind: scrape.TitleInputTitle, Title: "作品タイトル", Indices: []int{0}}
 	if err := store.recordTask(task, files, "error", "", "HTTP 429", 3); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.checkpoint(); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := store.cachedTitle("作品タイトル"); ok {
+	if _, ok := store.cachedTitle(task.cacheKey()); ok {
 		t.Fatal("transient error must be retried on next run")
 	}
 }
@@ -147,5 +149,17 @@ func TestLegacyLocalAcceptCacheIsRevalidated(t *testing.T) {
 	}
 	if _, ok := store.cachedTitle("作品"); ok || len(store.state.Files) != 0 {
 		t.Fatal("old local accept cache bypasses mandatory Jev")
+	}
+}
+
+func TestRateLimitErrorsAreNotImmediatelyRetried(t *testing.T) {
+	for _, message := range []string{
+		"Google search returned HTTP 429",
+		"too many requests",
+		"google search temporarily disabled after rate limit; retry in 5m",
+	} {
+		if isTransientResolutionError(errors.New(message)) {
+			t.Fatalf("rate limit error must not trigger per-item retry: %q", message)
+		}
 	}
 }

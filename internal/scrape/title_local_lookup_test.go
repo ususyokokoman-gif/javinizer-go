@@ -169,3 +169,23 @@ func TestLocalTitleCancellationPreventsWeb(t *testing.T) {
 		t.Fatalf("id=%s err=%v", id, err)
 	}
 }
+
+func TestTitleCatalogResolverInitializesDirectJavDBSource(t *testing.T) {
+	r := NewTitleCatalogResolver(&Config{})
+	if r == nil || r.scraper == nil || r.scraper.registry == nil {
+		t.Fatal("resolver direct-source registry is not initialized")
+	}
+	instance, ok := r.scraper.registry.GetInstance("javdb")
+	if !ok || instance == nil {
+		t.Fatal("javdb direct title source is not registered")
+	}
+	if !instance.IsEnabled() {
+		t.Fatal("javdb direct title source is not enabled")
+	}
+	if !r.scraper.cfg.PreferNonGoogleTitleSearch {
+		t.Fatal("bulk resolver must prefer non-Google public search")
+	}
+	if !r.scraper.cfg.DisableHeadlessTitleSearch {
+		t.Fatal("bulk resolver must disable headless public-search retry")
+	}
+}

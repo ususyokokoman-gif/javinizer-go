@@ -111,3 +111,20 @@ func TestBuildTitleWorkGroupsSameTitleAcrossFolders(t *testing.T) {
 		t.Fatalf("second task=%+v", tasks[1])
 	}
 }
+
+func TestBuildTitleWorkGroupsQualityVariantsOfOpaqueKey(t *testing.T) {
+	files := []fileItem{
+		{Path: filepath.Join("set-01", "c9dqb3ybpvq80kae_720p.mp4")},
+		{Path: filepath.Join("set-02", "c9dqb3ybpvq80kae_1280p.mkv")},
+	}
+	tasks := buildTitleWork(files)
+	if len(tasks) != 1 {
+		t.Fatalf("tasks=%d, want 1", len(tasks))
+	}
+	if tasks[0].Title != "c9dqb3ybpvq80kae" {
+		t.Fatalf("title=%q", tasks[0].Title)
+	}
+	if len(tasks[0].Indices) != 2 {
+		t.Fatalf("indices=%v", tasks[0].Indices)
+	}
+}

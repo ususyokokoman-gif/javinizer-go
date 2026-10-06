@@ -15,6 +15,30 @@ import (
 
 var googleBrowserFallback = fetchGoogleSearchWithHeadlessBrowser
 
+func (s *Scraper) lookupCatalogIDByOpaqueKey(ctx context.Context, key string) (string, error) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return "", fmt.Errorf("opaque filename key is empty")
+	}
+
+	// Opaque IDs are not titles. Do one quoted reverse lookup instead of the
+	// eight title-query variants. If the exact key is not indexed, later
+	// pipeline stages can decide whether heavier evidence extraction is worth
+	// the cost.
+	query := "\"" + strings.ReplaceAll(key, "\"", "") + "\""
+	results, provider, err := s.fetchGeneralTitleWebSearch(ctx, query)
+	if err != nil {
+		return "", err
+	}
+	logging.Infof("[scrape] opaque reverse lookup provider=%s key=%q results=%d", provider, truncateRunes(key, 100), len(results))
+
+	id, ok := chooseCatalogCandidate(key, results)
+	if !ok {
+		return "", fmt.Errorf("opaque filename key produced no sufficiently corroborated catalog-ID candidate")
+	}
+	return s.finalizeCatalogCandidate(ctx, key, id, results)
+}
+
 func (s *Scraper) lookupCatalogIDOnWeb(ctx context.Context, title string) (string, error) {
 	// First ask metadata sources that can search by title directly. A JavDB
 	// candidate is re-opened as a detail page before it reaches this layer, so
@@ -45,6 +69,13 @@ func (s *Scraper) lookupCatalogIDOnWeb(ctx context.Context, title string) (strin
 	}
 
 	queries := buildTitleWebQueries(title)
+	if s.cfg != nil && s.cfg.PreferNonGoogleTitleSearch && len(queries) > 3 {
+		// High-volume bulk mode stops after the broad/title+ID/quoted variants.
+		// Site-qualified query fan-out is too expensive across thousands of
+		// files and is reserved for explicit/manual resolution paths.
+		queries = queries[:3]
+		logging.Infof("[scrape] bulk title search limits query variants to %d", len(queries))
+	}
 	if !directOK && len(queries) > 0 && s.jevCatalogGateEnabled() {
 		if id, accepted, fastErr := s.tryJevFastTitlePath(ctx, title, queries[0]); accepted {
 			return id, nil
@@ -120,7 +151,6 @@ func (s *Scraper) lookupCatalogIDOnWeb(ctx context.Context, title string) (strin
 	logging.Infof("[scrape] using verified direct title candidate %s after no conflicting strong web evidence was found", id)
 	return s.finalizeCatalogCandidate(ctx, title, id, merged)
 }
-
 
 func (s *Scraper) tryJevFastTitlePath(ctx context.Context, title, query string) (string, bool, error) {
 	if s == nil || !s.jevCatalogGateEnabled() || strings.TrimSpace(query) == "" {
@@ -212,6 +242,14 @@ func (s *Scraper) fetchTitleWebSearch(ctx context.Context, provider, query strin
 	if provider != "google" {
 		return nil, fmt.Errorf("unsupported web search provider %q; Google is the only provider", provider)
 	}
+	if s == nil || s.httpClient == nil {
+		return nil, fmt.Errorf("Google search has no HTTP client")
+	}
+	if err := s.waitTitleSearchProvider(ctx, "google"); err != nil {
+		return nil, err
+	}
+	headlessAllowed := s.cfg == nil || !s.cfg.DisableHeadlessTitleSearch
+
 	endpoint := "https://www.google.com/search?hl=ja&num=10&filter=0&pws=0&safe=off&q=" + url.QueryEscape(query)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -224,33 +262,53 @@ func (s *Scraper) fetchTitleWebSearch(ctx context.Context, provider, query strin
 	req.Header.Set("User-Agent", ua)
 	req.Header.Set("Accept", "text/html,application/xhtml+xml")
 	req.Header.Set("Accept-Language", "ja-JP,ja;q=0.9,en-US;q=0.7,en;q=0.5")
+
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
-		if ctx.Err() != nil {
+		if ctx.Err() != nil || !headlessAllowed {
 			return nil, fmt.Errorf("Google search request failed: %w", err)
 		}
 		return retryGoogleSearchWithBrowser(ctx, endpoint, "request failed", err)
 	}
 	if resp == nil {
+		if !headlessAllowed {
+			return nil, fmt.Errorf("Google search returned nil response")
+		}
 		return retryGoogleSearchWithBrowser(ctx, endpoint, "returned nil response", nil)
 	}
 	defer resp.Body.Close()
+
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		if shouldUseHeadlessGoogleFallback(resp.StatusCode) {
+		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusForbidden {
+			s.markTitleSearchRateLimited("google", resp.Header.Get("Retry-After"))
+		}
+		if headlessAllowed && shouldUseHeadlessGoogleFallback(resp.StatusCode) {
 			return retryGoogleSearchWithBrowser(ctx, endpoint, fmt.Sprintf("returned HTTP %d", resp.StatusCode), nil)
 		}
 		return nil, fmt.Errorf("Google search returned HTTP %d", resp.StatusCode)
 	}
+
 	doc, err := goquery.NewDocumentFromReader(io.LimitReader(resp.Body, maxWebSearchBody))
 	if err != nil {
+		if !headlessAllowed {
+			return nil, fmt.Errorf("parse Google search page: %w", err)
+		}
 		return retryGoogleSearchWithBrowser(ctx, endpoint, "returned unparsable HTML", err)
 	}
 	results := parseTitleWebResults("google", doc)
 	if isGoogleSearchInterstitial(doc, results) {
+		s.markTitleSearchRateLimited("google", "")
+		if !headlessAllowed {
+			return nil, fmt.Errorf("Google returned an interstitial instead of search results")
+		}
 		return retryGoogleSearchWithBrowser(ctx, endpoint, "returned an interstitial instead of search results", nil)
 	}
 	if len(results) == 0 {
+		if !headlessAllowed {
+			return nil, fmt.Errorf("Google returned no parseable organic results")
+		}
 		return retryGoogleSearchWithBrowser(ctx, endpoint, "returned no parseable organic results", nil)
 	}
+	s.markTitleSearchSuccess("google")
 	return results, nil
 }

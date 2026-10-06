@@ -128,15 +128,16 @@ type ScraperInstanceResolver interface {
 
 // Scraper is the scrape engine that orchestrates cache lookup, multi-source scraping, and aggregation for a single MovieID.
 type Scraper struct {
-	registry    ScraperInstanceResolver
-	aggregator  aggregator.AggregatorInterface
-	actressRepo database.ActressRepositoryInterface
-	movieRepo   database.MovieRepositoryInterface
-	httpClient  httpclientiface.HTTPClient
-	cfg         *Config
-	translator  Translator
-	fs          afero.Fs
-	breaker     *scraperCircuitBreaker
+	registry         ScraperInstanceResolver
+	aggregator       aggregator.AggregatorInterface
+	actressRepo      database.ActressRepositoryInterface
+	movieRepo        database.MovieRepositoryInterface
+	httpClient       httpclientiface.HTTPClient
+	cfg              *Config
+	translator       Translator
+	fs               afero.Fs
+	breaker          *scraperCircuitBreaker
+	titleSearchGuard *titleSearchProviderGuard
 }
 
 // ScraperInterface is the contract for executing a scrape operation.
@@ -197,8 +198,9 @@ func (s *Scraper) QueryRaw(ctx context.Context, movieID, scraperName string) (*m
 // All other dependencies are nil — QueryRaw only needs the registry.
 func NewQueryOnly(registry ScraperInstanceResolver) *Scraper {
 	return &Scraper{
-		registry: registry,
-		cfg:      &Config{},
+		registry:         registry,
+		cfg:              &Config{},
+		titleSearchGuard: newTitleSearchProviderGuard(),
 	}
 }
 
@@ -228,15 +230,16 @@ func New(
 		cfg = &Config{}
 	}
 	return &Scraper{
-		registry:    registry,
-		aggregator:  aggregator,
-		actressRepo: actressRepo,
-		movieRepo:   movieRepo,
-		httpClient:  httpClient,
-		cfg:         cfg,
-		translator:  translator,
-		fs:          fs,
-		breaker:     newScraperCircuitBreaker(circuitBreakerThreshold),
+		registry:         registry,
+		aggregator:       aggregator,
+		actressRepo:      actressRepo,
+		movieRepo:        movieRepo,
+		httpClient:       httpClient,
+		cfg:              cfg,
+		translator:       translator,
+		fs:               fs,
+		breaker:          newScraperCircuitBreaker(circuitBreakerThreshold),
+		titleSearchGuard: newTitleSearchProviderGuard(),
 	}
 }
 

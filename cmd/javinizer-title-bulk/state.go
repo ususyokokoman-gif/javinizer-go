@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-const bulkStateVersion = 3
+const bulkStateVersion = 5
 
 type titleResolver interface {
 	Resolve(context.Context, string) (string, error)
@@ -108,6 +108,13 @@ func loadPersistentState(path string) (persistentState, error) {
 			// Re-resolve once under the mandatory gate; retain batching and resume
 			// for all results written by this version.
 			st = emptyPersistentState()
+		} else if st.Version == 3 || st.Version == 4 {
+			// v3 treated an arbitrary filename stem as a human title and also
+			// auto-accepted a single regex-looking catalog substring. v4 fixed
+			// that classification but still keyed state by query text alone. v5
+			// includes the input kind in the key so opaque IDs and real titles
+			// can never contaminate each other's durable cache entries.
+			st = emptyPersistentState()
 		} else if st.Version != bulkStateVersion {
 			return persistentState{}, fmt.Errorf("unsupported state version %d in %s", st.Version, candidate)
 		}
@@ -149,7 +156,7 @@ func (s *stateStore) recordTask(task titleWork, files []fileItem, status, catalo
 		s.state.Titles = make(map[string]titleCacheRecord)
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	s.state.Titles[task.Title] = titleCacheRecord{
+	s.state.Titles[task.cacheKey()] = titleCacheRecord{
 		CatalogID: catalogID,
 		Status:    status,
 		Error:     errorText,
@@ -312,6 +319,14 @@ func isTransientResolutionError(err error) bool {
 		return false
 	}
 	msg := strings.ToLower(err.Error())
+	// A provider-wide 429 cooldown cannot be helped by immediately retrying the
+	// same item. Let the item remain non-terminal/error and move on; a later run
+	// can retry after the shared provider guard has recovered.
+	if strings.Contains(msg, "http 429") ||
+		strings.Contains(msg, "too many requests") ||
+		strings.Contains(msg, "temporarily disabled after rate limit") {
+		return false
+	}
 	patterns := []string{
 		"context deadline exceeded",
 		"timeout",
@@ -327,12 +342,10 @@ func isTransientResolutionError(err error) bool {
 		"http 403",
 		"http 408",
 		"http 425",
-		"http 429",
 		"http 500",
 		"http 502",
 		"http 503",
 		"http 504",
-		"too many requests",
 	}
 	for _, pattern := range patterns {
 		if strings.Contains(msg, pattern) {

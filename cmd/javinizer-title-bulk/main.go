@@ -52,8 +52,13 @@ type resultRecord struct {
 }
 
 type titleWork struct {
+	Kind    scrape.TitleInputKind
 	Title   string
 	Indices []int
+}
+
+func (w titleWork) cacheKey() string {
+	return string(w.Kind) + "\x00" + strings.ToLower(strings.TrimSpace(w.Title))
 }
 
 type titleWorkResult struct {
@@ -67,19 +72,20 @@ type titleWorkResult struct {
 
 func main() {
 	var (
-		root        = flag.String("root", "", "Root directory containing media files")
-		outDir      = flag.String("out", "bulk-title-jev-output", "Output directory")
-		workers     = flag.Int("workers", 4, "Concurrent unique-title -> Local -> Jev -> Web fallback workers")
-		timeout     = flag.Duration("timeout", 45*time.Second, "Per-title timeout")
-		quickBytes  = flag.Int64("quick-hash-bytes", 64<<10, "Bytes sampled from head and tail for duplicate prefilter")
-		skipDup     = flag.Bool("skip-duplicates", true, "Skip duplicate detection (set -skip-duplicates=false to enable)")
-		resume      = flag.Bool("resume", true, "Resume from durable title state and reuse terminal cached results")
-		statePath   = flag.String("state", "", "State file path (default: <out>/bulk-state.json)")
-		maxAttempts = flag.Int("max-attempts", 3, "Maximum attempts for transient title-resolution failures")
-		retryBase   = flag.Duration("retry-base-delay", 2*time.Second, "Base delay for transient retry backoff")
-		r18Dump     = flag.String("r18-dump", "", "Local r18.dev dump path (default: JAVINIZER user config directory)")
-		noLocalDB   = flag.Bool("no-local-title-db", false, "Disable local r18.dev title lookup and use web fallback only")
-		prepareDB   = flag.Bool("prepare-title-db", false, "Prepare/update the local r18.dev title database and exit")
+		root                = flag.String("root", "", "Root directory containing media files")
+		outDir              = flag.String("out", "bulk-title-jev-output", "Output directory")
+		workers             = flag.Int("workers", 4, "Concurrent local identification workers; web providers are paced separately")
+		timeout             = flag.Duration("timeout", 20*time.Second, "Per-item identification timeout")
+		quickBytes          = flag.Int64("quick-hash-bytes", 64<<10, "Bytes sampled from head and tail for duplicate prefilter")
+		skipDup             = flag.Bool("skip-duplicates", true, "Skip duplicate detection (set -skip-duplicates=false to enable)")
+		resume              = flag.Bool("resume", true, "Resume from durable title state and reuse terminal cached results")
+		statePath           = flag.String("state", "", "State file path (default: <out>/bulk-state.json)")
+		resolutionCachePath = flag.String("resolution-cache", "", "Shared accepted-resolution cache (default: JAVINIZER user config directory)")
+		maxAttempts         = flag.Int("max-attempts", 1, "Maximum attempts per item; provider-wide cooldown handles rate limits")
+		retryBase           = flag.Duration("retry-base-delay", 2*time.Second, "Base delay for transient retry backoff when max-attempts > 1")
+		r18Dump             = flag.String("r18-dump", "", "Local r18.dev dump path (default: JAVINIZER user config directory)")
+		noLocalDB           = flag.Bool("no-local-title-db", false, "Disable local r18.dev title lookup and use web fallback only")
+		prepareDB           = flag.Bool("prepare-title-db", false, "Prepare/update the local r18.dev title database and exit")
 	)
 	flag.Parse()
 
@@ -155,6 +161,13 @@ func main() {
 	fmt.Printf("STATE_FILE=%s\n", resolvedStatePath)
 	fmt.Printf("RESUME=%t\n", *resume)
 
+	resolutionCache, cacheErr := openResolutionCache(*resolutionCachePath)
+	if cacheErr != nil {
+		fatalf("open shared resolution cache: %v", cacheErr)
+	}
+	defer func() { _ = resolutionCache.Close() }()
+	fmt.Printf("RESOLUTION_CACHE=%s\n", resolutionCache.Path())
+
 	scanStarted := time.Now()
 	scanDone := beginCLIPhase("media_scan")
 	scan := scanMediaWithProgress
@@ -206,7 +219,18 @@ func main() {
 	pending := make([]int, 0, len(tasks))
 	cachedTitles := 0
 	for taskIndex, task := range tasks {
-		cached, ok := store.cachedTitle(task.Title)
+		cached, ok := store.cachedTitle(task.cacheKey())
+		if !ok {
+			if id, hit, cacheErr := resolutionCache.Get(task.Kind, task.Title); cacheErr != nil {
+				fatalf("read shared resolution cache: %v", cacheErr)
+			} else if hit {
+				cached = titleCacheRecord{CatalogID: id, Status: "accepted", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+				ok = true
+				if err := store.recordTask(task, unique, "accepted", id, "", 0); err != nil {
+					fatalf("record shared-cache hit in state: %v", err)
+				}
+			}
+		}
 		if !ok {
 			pending = append(pending, taskIndex)
 			continue
@@ -284,7 +308,11 @@ func main() {
 				task := tasks[taskIndex]
 				var searchDone func(error)
 				firstSearch.Do(func() { searchDone = beginCLIPhase("first_title_search") })
-				resolved := resolveTitleWithRetry(resolver, task.Title, *timeout, *maxAttempts, *retryBase, nil)
+				mediaPath := ""
+				if len(task.Indices) > 0 {
+					mediaPath = unique[task.Indices[0]].Path
+				}
+				resolved := resolveWorkWithRetry(resolver, mediaPath, task.Title, *timeout, *maxAttempts, *retryBase, nil)
 				if searchDone != nil {
 					searchDone(resolved.Err)
 				}
@@ -348,6 +376,11 @@ func main() {
 		}
 		if err := store.recordTask(task, unique, res.Status, res.CatalogID, res.Error, res.Attempts); err != nil {
 			fatalf("record state: %v", err)
+		}
+		if res.Status == "accepted" && strings.TrimSpace(res.CatalogID) != "" {
+			if err := resolutionCache.Put(task.Kind, task.Title, res.CatalogID); err != nil {
+				fatalf("write shared resolution cache: %v", err)
+			}
 		}
 		pendingCheckpoint++
 		if pendingCheckpoint >= checkpointEvery || time.Since(lastCheckpoint) >= 2*time.Second {
@@ -449,22 +482,24 @@ func scanMediaOptions(root string, progress func(int), metadata bool) ([]fileIte
 }
 
 func titleFromPath(path string) string {
-	base := filepath.Base(path)
-	ext := filepath.Ext(base)
-	return strings.TrimSpace(strings.TrimSuffix(base, ext))
+	prepared := scrape.PrepareTitleResolutionInput(path)
+	return prepared.Query
 }
 
 func buildTitleWork(files []fileItem) []titleWork {
 	indexByTitle := make(map[string]int, len(files))
 	tasks := make([]titleWork, 0, len(files))
 	for i, file := range files {
-		title := titleFromPath(file.Path)
-		if taskIndex, ok := indexByTitle[title]; ok {
+		prepared := scrape.PrepareTitleResolutionInput(file.Path)
+		title := prepared.Query
+		cacheKey := string(prepared.Kind) + "\x00" + strings.ToLower(title)
+		if taskIndex, ok := indexByTitle[cacheKey]; ok {
 			tasks[taskIndex].Indices = append(tasks[taskIndex].Indices, i)
 			continue
 		}
-		indexByTitle[title] = len(tasks)
+		indexByTitle[cacheKey] = len(tasks)
 		tasks = append(tasks, titleWork{
+			Kind:    prepared.Kind,
 			Title:   title,
 			Indices: []int{i},
 		})

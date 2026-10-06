@@ -11,6 +11,8 @@ import (
 
 	"github.com/javinizer/javinizer-go/internal/logging"
 	"github.com/javinizer/javinizer-go/internal/models"
+	"github.com/javinizer/javinizer-go/internal/scraper/javdb"
+	"github.com/javinizer/javinizer-go/internal/scraperutil"
 )
 
 // TitleCatalogResolver is a lightweight title -> catalog ID resolver.
@@ -28,6 +30,32 @@ type TitleCatalogResolver struct {
 // mutate their original config while this resolver is running.
 func NewTitleCatalogResolver(cfg *Config) *TitleCatalogResolver {
 	return NewTitleCatalogResolverWithLookup(cfg, nil)
+}
+
+// newTitleDirectSourceRegistry boots only the direct title-identification source
+// needed by the high-volume resolver. Previously the lightweight resolver left
+// Scraper.registry nil, which made collectDirectTitleEvidence return immediately
+// and silently disabled JavDB title search.
+func newTitleDirectSourceRegistry() ScraperInstanceResolver {
+	reg := scraperutil.NewScraperRegistry()
+	javdb.Register(reg)
+	registration, ok := reg.Get("javdb")
+	if !ok || registration.Constructor == nil {
+		logging.Warnf("[scrape] direct title source javdb registration unavailable")
+		return reg
+	}
+	settings := registration.Defaults
+	settings.Enabled = true
+	instance, err := registration.Constructor(scraperutil.ScraperDeps{
+		Settings:       settings,
+		TimeoutSeconds: 15,
+	})
+	if err != nil {
+		logging.Warnf("[scrape] direct title source javdb init failed: %v", err)
+		return reg
+	}
+	reg.RegisterInstance(instance)
+	return reg
 }
 
 // NewTitleCatalogResolverWithLookup adds an optional zero-HTTP local title
@@ -48,12 +76,19 @@ func NewTitleCatalogResolverWithLookup(cfg *Config, lookup models.R18DevTitleLoo
 	if strings.TrimSpace(resolved.JevCatalogEndpoint) == "" {
 		resolved.JevCatalogEndpoint = "https://api.typesafe.ai/v1/systemone"
 	}
+	// Bulk title identification is deliberately conservative with public search:
+	// Google is last-resort and headless-browser retries are disabled.
+	resolved.PreferNonGoogleTitleSearch = true
+	resolved.DisableHeadlessTitleSearch = true
 
 	client := &http.Client{Timeout: 30 * time.Second}
 	return &TitleCatalogResolver{
 		scraper: &Scraper{
-			httpClient: client,
-			cfg:        &resolved,
+			httpClient:       client,
+			cfg:              &resolved,
+			registry:         newTitleDirectSourceRegistry(),
+			breaker:          newScraperCircuitBreaker(circuitBreakerThreshold),
+			titleSearchGuard: newTitleSearchProviderGuard(),
 		},
 		titleLookup: lookup,
 	}
@@ -65,24 +100,29 @@ func (r *TitleCatalogResolver) Resolve(ctx context.Context, title string) (strin
 	if r == nil || r.scraper == nil {
 		return "", fmt.Errorf("title catalog resolver is not initialized")
 	}
-	title = strings.TrimSpace(title)
-	if title == "" {
+	prepared := PrepareTitleResolutionInput(title)
+	if prepared.Query == "" {
 		return "", fmt.Errorf("title is empty")
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	logging.Infof("TITLE_INPUT kind=%s raw=%q query=%q", prepared.Kind, truncateRunes(prepared.Raw, 100), truncateRunes(prepared.Query, 100))
 
-	// Deterministic first: when the filename/title already contains exactly one
-	// syntactically valid catalog ID, no web search or Jev call is needed.
-	// This is both faster and more reliable than asking an external service to
-	// rediscover information already present in the filename.
-	if ids := uniqueNormalizedCatalogIDs(extractCatalogCandidates(title)); len(ids) == 1 {
+	// Deterministic first: only a standalone catalog token may bypass all
+	// external validation. Catalog-looking substrings inside opaque generated
+	// names are deliberately excluded by extractStandaloneCatalogCandidates.
+	if ids := uniqueNormalizedCatalogIDs(extractStandaloneCatalogCandidates(prepared.Query)); len(ids) == 1 {
 		return ids[0], nil
 	}
 
+	if prepared.Kind == TitleInputOpaque {
+		logging.Infof("LOCAL_TITLE_SEARCH=SKIP reason=opaque_filename_key")
+		return r.scraper.lookupCatalogIDByOpaqueKey(ctx, prepared.Query)
+	}
+
 	if r.titleLookup != nil {
-		if id, ok := r.resolveFromLocalTitle(ctx, title); ok {
+		if id, ok := r.resolveFromLocalTitle(ctx, prepared.Query); ok {
 			return id, nil
 		}
 	} else {
@@ -92,7 +132,7 @@ func (r *TitleCatalogResolver) Resolve(ctx context.Context, title string) (strin
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	return r.scraper.lookupCatalogIDOnWeb(ctx, title)
+	return r.scraper.lookupCatalogIDOnWeb(ctx, prepared.Query)
 }
 
 func (r *TitleCatalogResolver) resolveFromLocalTitle(ctx context.Context, title string) (string, bool) {

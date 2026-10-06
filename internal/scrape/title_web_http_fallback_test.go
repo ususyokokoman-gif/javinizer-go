@@ -98,7 +98,6 @@ func TestFetchTitleWebSearchFallsBackToBrowserWhenHTTP200HasNoOrganicResults(t *
 	}
 }
 
-
 func TestNormalizeBingResultURLDecodesTrackedTarget(t *testing.T) {
 	raw := "https://www.bing.com/ck/a?!&&p=abc&u=a1aHR0cHM6Ly93d3cuZG1tLmNvLmpwL2RpZ2l0YWwvdmlkZW9hLy0vZGV0YWlsLz0vY2lkPWlwejAwNTA4Lw&ntb=1"
 	want := "https://www.dmm.co.jp/digital/videoa/-/detail/=/cid=ipz00508/"
@@ -114,7 +113,6 @@ func TestNormalizeBingResultURLDecodesTrackedTarget(t *testing.T) {
 		t.Fatalf("decoded Bing result catalog IDs = %#v, want [IPZ-508]", ids)
 	}
 }
-
 
 func TestParseBingResultsNormalizesTrackedTarget(t *testing.T) {
 	html := `<html><body><ol id="b_results"><li class="b_algo"><h2><a href="https://www.bing.com/ck/a?!&&p=abc&u=a1aHR0cHM6Ly93d3cuZG1tLmNvLmpwL2RpZ2l0YWwvdmlkZW9hLy0vZGV0YWlsLz0vY2lkPWlweDAwMDcyLw&ntb=1">狙われた通学路 共謀痴漢電車 桃乃木かな IPX-072</a></h2><div class="b_caption"><p>品番 IPX-072</p></div></li></ol></body></html>`
@@ -136,5 +134,49 @@ func TestParseBingResultsNormalizesTrackedTarget(t *testing.T) {
 	ids := extractTrustedURLCatalogCandidates(results[0].URL)
 	if len(ids) != 1 || ids[0] != "IPX-072" {
 		t.Fatalf("Bing parsed catalog IDs = %#v, want [IPX-072]", ids)
+	}
+}
+
+func TestBulkGoogle429DoesNotLaunchHeadlessAndOpensCooldown(t *testing.T) {
+	original := googleBrowserFallback
+	defer func() { googleBrowserFallback = original }()
+
+	browserCalls := 0
+	googleBrowserFallback = func(_ context.Context, _ string) ([]titleWebSearchResult, error) {
+		browserCalls++
+		return nil, errors.New("headless must not run in bulk mode")
+	}
+
+	httpCalls := 0
+	s := &Scraper{
+		httpClient: titleLookupHTTPClientFunc(func(*http.Request) (*http.Response, error) {
+			httpCalls++
+			return &http.Response{
+				StatusCode: http.StatusTooManyRequests,
+				Body:       io.NopCloser(strings.NewReader("rate limited")),
+				Header:     make(http.Header),
+			}, nil
+		}),
+		cfg:              &Config{DisableHeadlessTitleSearch: true},
+		titleSearchGuard: newTitleSearchProviderGuard(),
+	}
+
+	_, err := s.fetchTitleWebSearch(context.Background(), "google", "opaque-key")
+	if err == nil {
+		t.Fatal("expected 429 error")
+	}
+	if browserCalls != 0 {
+		t.Fatalf("headless calls=%d, want 0", browserCalls)
+	}
+	if httpCalls != 1 {
+		t.Fatalf("HTTP calls=%d, want 1", httpCalls)
+	}
+
+	_, err = s.fetchTitleWebSearch(context.Background(), "google", "another-key")
+	if err == nil || !strings.Contains(err.Error(), "temporarily disabled") {
+		t.Fatalf("second call error=%v, want provider cooldown", err)
+	}
+	if httpCalls != 1 {
+		t.Fatalf("HTTP calls after cooldown=%d, want still 1", httpCalls)
 	}
 }

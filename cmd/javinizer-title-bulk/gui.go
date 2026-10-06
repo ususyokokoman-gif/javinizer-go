@@ -197,8 +197,8 @@ func (a *guiApp) Start(root, outDir, apiKey string) guiRunResult {
 		"-out", outDir,
 		"-workers", workerCount,
 		"-skip-duplicates",
-		"-timeout", "45s",
-		"-max-attempts", "2",
+		"-timeout", "20s",
+		"-max-attempts", "1",
 		"-retry-base-delay", "1s",
 	)
 	cmd.Env = append(os.Environ(), "TYPESAFE_API_KEY="+apiKey)
