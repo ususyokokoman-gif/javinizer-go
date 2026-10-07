@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"golang.org/x/text/unicode/norm"
 )
@@ -63,13 +64,80 @@ func PrepareTitleResolutionInput(input string) PreparedTitleInput {
 		query = parts[1]
 	}
 
-	if ids := uniqueNormalizedCatalogIDs(extractStandaloneCatalogCandidates(query)); len(ids) == 1 {
+	// Real-world library filenames frequently start with a catalog ID and then
+	// append the title with an underscore, for example:
+	//   ADN-444_作品タイトル_出演者.mp4
+	// The generic standalone extractor deliberately treats underscore as an
+	// identifier character to avoid accepting catalog-looking substrings from
+	// opaque download IDs. For the filename start position only, however, an
+	// underscore is a deterministic field separator. Accept that narrow case
+	// and reduce the lookup key to the exact catalog ID so variants group
+	// together and can be verified locally before any Web access.
+	if id := extractLeadingFilenameCatalogCandidate(query); id != "" {
+		return PreparedTitleInput{Raw: raw, Query: id, Kind: TitleInputCatalog}
+	}
+	if ids := uniqueNormalizedCatalogIDs(extractStandaloneCatalogCandidates(query)); len(ids) == 1 && !catalogCandidateHasUnsafeAttachedSuffix(ids[0]) {
 		return PreparedTitleInput{Raw: raw, Query: query, Kind: TitleInputCatalog}
 	}
 	if looksOpaqueFilenameKey(query) {
 		return PreparedTitleInput{Raw: raw, Query: query, Kind: TitleInputOpaque}
 	}
 	return PreparedTitleInput{Raw: raw, Query: query, Kind: TitleInputTitle}
+}
+
+func extractLeadingFilenameCatalogCandidate(s string) string {
+	s = strings.TrimSpace(norm.NFKC.String(s))
+	if s == "" {
+		return ""
+	}
+	loc := webCatalogCandidateRE.FindStringIndex(s)
+	if len(loc) != 2 || loc[0] != 0 {
+		return ""
+	}
+	if loc[1] < len(s) {
+		r, _ := utf8.DecodeRuneInString(s[loc[1]:])
+		switch r {
+		case '_', ' ', '\t', '[', '【', '(', '（':
+			// Safe filename/title separators immediately after a leading ID.
+		default:
+			return ""
+		}
+	}
+	id := normalizeWebCatalogCandidate(s[loc[0]:loc[1]])
+	if id == "" {
+		return ""
+	}
+	if catalogCandidateHasUnsafeAttachedSuffix(id) {
+		return ""
+	}
+	return id
+}
+
+func catalogCandidateHasUnsafeAttachedSuffix(id string) bool {
+	// A long alphabetic tail glued directly to the numeric portion is much
+	// more likely to be an opaque release key than a catalog edition suffix.
+	// Keep known short edition forms (EC, TK, BOD, etc.) intact, but fail
+	// closed for 4+ trailing letters such as ABCRE-0275IXYZ.
+	lastDigit := -1
+	runes := []rune(strings.TrimSpace(norm.NFKC.String(id)))
+	for i, r := range runes {
+		if unicode.IsDigit(r) {
+			lastDigit = i
+		}
+	}
+	if lastDigit < 0 || lastDigit+1 >= len(runes) {
+		return false
+	}
+	tail := runes[lastDigit+1:]
+	if len(tail) < 4 {
+		return false
+	}
+	for _, r := range tail {
+		if !unicode.IsLetter(r) {
+			return false
+		}
+	}
+	return true
 }
 
 func looksOpaqueFilenameKey(s string) bool {

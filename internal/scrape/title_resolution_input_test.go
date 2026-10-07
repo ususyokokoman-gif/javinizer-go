@@ -74,3 +74,34 @@ func TestCatalogSuffixVariantsArePreserved(t *testing.T) {
 		}
 	}
 }
+
+func TestPrepareTitleResolutionInputClassifiesLeadingCatalogBeforeTitle(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"ADN-444_【モザイク除去】地味で無口な隣のお姉さん_黒川すみれ.mp4", "ADN-444"},
+		{"dass-003_隣人に俺の妻が寝取られて。_黒川すみれ.mkv", "DASS-003"},
+		{"CJOD-179_hdハメを外した女教師に誘惑されて_黒川すみれ.mp4", "CJOD-179"},
+		{"START-487-EC_作品タイトル.mp4", "START-487-EC"},
+		{"FSDSS-999TK_作品タイトル.mp4", "FSDSS-999TK"},
+		{"SNIS-999BOD_作品タイトル.mp4", "SNIS-999BOD"},
+	}
+	for _, tt := range tests {
+		got := PrepareTitleResolutionInput(tt.input)
+		if got.Kind != TitleInputCatalog {
+			t.Errorf("%q kind=%s, want catalog", tt.input, got.Kind)
+			continue
+		}
+		if got.Query != tt.want {
+			t.Errorf("%q query=%q, want %q", tt.input, got.Query, tt.want)
+		}
+	}
+}
+
+func TestPrepareTitleResolutionInputDoesNotPromoteEmbeddedOpaqueCatalogSubstring(t *testing.T) {
+	got := PrepareTitleResolutionInput("abcre-0275ixyz_720p.mp4")
+	if got.Kind == TitleInputCatalog {
+		t.Fatalf("kind=%s query=%q; opaque substring must not become catalog", got.Kind, got.Query)
+	}
+}

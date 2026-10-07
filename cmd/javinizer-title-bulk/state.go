@@ -15,7 +15,7 @@ import (
 	"github.com/javinizer/javinizer-go/internal/scrape"
 )
 
-const bulkStateVersion = 7
+const bulkStateVersion = 8
 
 type titleResolver interface {
 	Resolve(context.Context, string) (string, error)
@@ -101,9 +101,9 @@ func loadPersistentState(path string) (persistentState, error) {
 			continue
 		}
 		if st.Version != bulkStateVersion {
-			// v7 から「確定 / 要確認 / 未特定 / エラー」の安全判定へ変更した。
-			// 旧版の accepted には Web/Jev 単独採用が含まれ得るため、誤った
-			// ファイル名変更を防ぐ目的で旧判定は一切引き継がず再判定する。
+			// v8 では、ファイル名先頭の明確な品番をタイトルより先に分類する。
+			// task/cache key の意味が変わるため、旧stateの確定・要確認・未特定を
+			// 混在させず、現在の入力分類と判定基準で全件を再評価する。
 			st = emptyPersistentState()
 		}
 		if st.Files == nil {
