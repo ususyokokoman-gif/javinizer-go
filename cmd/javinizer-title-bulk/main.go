@@ -80,6 +80,7 @@ type titleWorkResult struct {
 func main() {
 	var (
 		root                = flag.String("root", "", "Root directory containing media files")
+		filesManifest       = flag.String("files-manifest", "", "JSON file containing an explicit list of media files")
 		outDir              = flag.String("out", "bulk-title-jev-output", "Output directory")
 		workers             = flag.Int("workers", 4, "Concurrent local identification workers; web providers are paced separately")
 		timeout             = flag.Duration("timeout", 20*time.Second, "Per-item identification timeout")
@@ -108,16 +109,20 @@ func main() {
 		return
 	}
 
-	if strings.TrimSpace(*root) == "" {
+	rootValue := strings.TrimSpace(*root)
+	manifestValue := strings.TrimSpace(*filesManifest)
+	if rootValue == "" && manifestValue == "" {
 		// Double-click / no-argument startup is the normal end-user path.
-		// CLI behavior remains available when -root is supplied.
 		if len(os.Args) == 1 {
 			if err := runGUI(); err != nil {
 				fatalf("start GUI: %v", err)
 			}
 			return
 		}
-		fatalf("-root is required")
+		fatalf("-root or -files-manifest is required")
+	}
+	if rootValue != "" && manifestValue != "" {
+		fatalf("-root and -files-manifest cannot be used together")
 	}
 	runStarted := time.Now()
 	configDone := beginCLIPhase("config")
@@ -137,9 +142,19 @@ func main() {
 		fatalf("TYPESAFE_API_KEY is required")
 	}
 
-	absRoot, err := filepath.Abs(*root)
-	if err != nil {
-		fatalf("resolve root: %v", err)
+	absRoot := ""
+	absManifest := ""
+	var err error
+	if rootValue != "" {
+		absRoot, err = filepath.Abs(rootValue)
+		if err != nil {
+			fatalf("resolve root: %v", err)
+		}
+	} else {
+		absManifest, err = filepath.Abs(manifestValue)
+		if err != nil {
+			fatalf("resolve files manifest: %v", err)
+		}
 	}
 	absOut, err := filepath.Abs(*outDir)
 	if err != nil {
@@ -177,17 +192,33 @@ func main() {
 
 	scanStarted := time.Now()
 	scanDone := beginCLIPhase("media_scan")
-	scan := scanMediaWithProgress
-	if *skipDup {
-		scan = scanMediaForTitles
+	progress := func(found int) { fmt.Printf("MEDIA_SCAN_PROGRESS=%d\n", found) }
+	var files []fileItem
+	targetSummaryLabel := "対象フォルダ"
+	targetSummary := ""
+	if absManifest != "" {
+		files, err = scanMediaManifest(absManifest, progress, !*skipDup)
+		targetSummaryLabel = "対象ファイル"
+		targetSummary = "個別選択"
+		fmt.Println("INPUT_MODE=FILES")
+	} else {
+		scan := scanMediaWithProgress
+		if *skipDup {
+			scan = scanMediaForTitles
+		}
+		files, err = scan(absRoot, progress)
+		targetSummary = absRoot
+		fmt.Println("INPUT_MODE=FOLDER")
 	}
-	files, err := scan(absRoot, func(found int) { fmt.Printf("MEDIA_SCAN_PROGRESS=%d\n", found) })
 	scanDone(err)
 	if err != nil {
 		fatalf("scan media: %v", err)
 	}
 	if len(files) == 0 {
-		fatalf("no media files found under %s", absRoot)
+		fatalf("no media files found in selected input")
+	}
+	if absManifest != "" {
+		targetSummary = fmt.Sprintf("個別選択（%d本）", len(files))
 	}
 	fmt.Printf("FILES_TOTAL=%d\n", len(files))
 	fmt.Printf("MEDIA_SCAN_SECONDS=%.2f\n", time.Since(scanStarted).Seconds())
@@ -454,8 +485,8 @@ func main() {
 		resolutionMetrics = resolver.Metrics()
 	}
 	summary := fmt.Sprintf(
-		"処理結果=完了\n判定基準版=%d\n対象フォルダ=%s\n状態ファイル=%s\n再開機能=%t\n総ファイル数=%d\n重複確認数=%d\n判定対象数=%d\n検索単位数=%d\n再利用した検索単位=%d\n今回判定した検索単位=%d\n確定=%d\n要確認=%d\n未特定=%d\nエラー=%d\n自動整理対象=%d\n再利用ファイル=%d\n並列数=%d\n実使用並列数=%d\n最大試行回数=%d\n再試行基本待機=%s\n保存間隔=%d\n処理時間秒=%.2f\n1秒あたり処理数=%.3f\nP50=%dms\nP95=%dms\nWeb検索数=%d\n429件数=%d\n",
-		scrape.TitleDecisionPolicyVersion, absRoot, resolvedStatePath, *resume, len(files), len(duplicates), len(rows), len(tasks), cachedTitles, len(pending),
+		"処理結果=完了\n判定基準版=%d\n%s=%s\n状態ファイル=%s\n再開機能=%t\n総ファイル数=%d\n重複確認数=%d\n判定対象数=%d\n検索単位数=%d\n再利用した検索単位=%d\n今回判定した検索単位=%d\n確定=%d\n要確認=%d\n未特定=%d\nエラー=%d\n自動整理対象=%d\n再利用ファイル=%d\n並列数=%d\n実使用並列数=%d\n最大試行回数=%d\n再試行基本待機=%s\n保存間隔=%d\n処理時間秒=%.2f\n1秒あたり処理数=%.3f\nP50=%dms\nP95=%dms\nWeb検索数=%d\n429件数=%d\n",
+		scrape.TitleDecisionPolicyVersion, targetSummaryLabel, targetSummary, resolvedStatePath, *resume, len(files), len(duplicates), len(rows), len(tasks), cachedTitles, len(pending),
 		confirmed.Load(), review.Load(), unknown.Load(), failed.Load(), confirmed.Load(), cachedFiles.Load(),
 		*workers, workerCount, *maxAttempts, retryBase.String(), checkpointEvery, elapsed.Seconds(), rate,
 		p50MS, p95MS, resolutionMetrics.WebSearches, resolutionMetrics.HTTP429,
@@ -469,6 +500,57 @@ func main() {
 		len(files), confirmed.Load(), review.Load(), unknown.Load(), failed.Load(), cachedFiles.Load(), elapsed.Milliseconds(),
 		p50MS, p95MS, resolutionMetrics.WebSearches, resolutionMetrics.HTTP429)
 	fmt.Print(summary)
+}
+
+func scanMediaManifest(manifestPath string, progress func(int), metadata bool) ([]fileItem, error) {
+	raw, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return nil, fmt.Errorf("read files manifest: %w", err)
+	}
+	var paths []string
+	if err := json.Unmarshal(raw, &paths); err != nil {
+		return nil, fmt.Errorf("decode files manifest: %w", err)
+	}
+	if len(paths) == 0 {
+		return nil, fmt.Errorf("files manifest is empty")
+	}
+	out := make([]fileItem, 0, len(paths))
+	seen := make(map[string]struct{}, len(paths))
+	for _, rawPath := range paths {
+		path := strings.TrimSpace(rawPath)
+		if path == "" {
+			return nil, fmt.Errorf("files manifest contains an empty path")
+		}
+		abs, err := filepath.Abs(path)
+		if err != nil {
+			return nil, fmt.Errorf("resolve selected media %q: %w", path, err)
+		}
+		if _, ok := mediaExt[strings.ToLower(filepath.Ext(abs))]; !ok {
+			return nil, fmt.Errorf("unsupported selected media file: %s", abs)
+		}
+		if _, ok := seen[abs]; ok {
+			continue
+		}
+		info, err := os.Stat(abs)
+		if err != nil {
+			return nil, fmt.Errorf("stat selected media %s: %w", abs, err)
+		}
+		if !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("selected media is not a regular file: %s", abs)
+		}
+		seen[abs] = struct{}{}
+		item := fileItem{Path: abs, Size: -1}
+		if metadata {
+			item.Size = info.Size()
+			item.ModTimeNS = info.ModTime().UnixNano()
+		}
+		out = append(out, item)
+		if progress != nil {
+			progress(len(out))
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out, nil
 }
 
 func scanMedia(root string) ([]fileItem, error) { return scanMediaWithProgress(root, nil) }

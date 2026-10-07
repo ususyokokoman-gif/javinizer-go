@@ -15,6 +15,8 @@ let clickStarted = null;
 let firstProcessing = false;
 let backendReady = false;
 let pendingPaint = [];
+let selectedFolder = "";
+let selectedFiles = [];
 const number = (v) => Number(v).toLocaleString("ja-JP");
 const token = (line, key) => line.match(new RegExp(`(?:^|\\s)${key}=([\\d.]+)`))?.[1] || "0";
 
@@ -121,14 +123,30 @@ async function init() {
   // Subscribe before loading settings so no early events can be lost.
   window.runtime?.EventsOn?.("bulk-progress", handleProgress);
   const s = await window.go.main.guiApp.GetSettings();
-  root.value = s.last_root || "";
+  selectedFolder = s.last_root || "";
+  selectedFiles = [];
+  root.value = selectedFolder;
   outDir.value = s.output_dir || "";
   apiKey.placeholder = s.has_api_key ? "保存済み（変更時だけ入力）" : "初回のみ入力";
 }
 
 document.getElementById("chooseRoot").onclick = async () => {
   const selected = await window.go.main.guiApp.SelectMediaFolder();
-  if (selected) root.value = selected;
+  if (selected) {
+    selectedFolder = selected;
+    selectedFiles = [];
+    root.value = selected;
+    document.getElementById("selectionHint").textContent = "フォルダ内の対応動画ファイルをすべて処理します。";
+  }
+};
+document.getElementById("chooseFiles").onclick = async () => {
+  const selected = await window.go.main.guiApp.SelectMediaFiles();
+  if (selected?.length) {
+    selectedFolder = "";
+    selectedFiles = Array.from(selected);
+    root.value = selectedFiles.length === 1 ? selectedFiles[0] : number(selectedFiles.length) + "個の動画ファイルを選択";
+    document.getElementById("selectionHint").textContent = "選択した" + number(selectedFiles.length) + "本だけを処理します。";
+  }
 };
 document.getElementById("chooseOut").onclick = async () => {
   const selected = await window.go.main.guiApp.SelectOutputFolder();
@@ -156,7 +174,10 @@ start.onclick = async () => {
   log.textContent = humanLines.join("\n");
   reportPaint("first_display", clickStarted);
   try {
-    const result = await window.go.main.guiApp.Start(root.value, outDir.value, apiKey.value);
+    const app = window.go.main.guiApp;
+    const result = app.StartSelection
+      ? await app.StartSelection(selectedFolder, selectedFiles, outDir.value, apiKey.value)
+      : await app.Start(root.value, outDir.value, apiKey.value);
     status.textContent = result.message;
     appendLog(result.message);
     if (result.success) apiKey.value = "";

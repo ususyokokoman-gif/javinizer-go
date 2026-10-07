@@ -10,14 +10,16 @@
   <main id="main">
  <div class="settings">
     <h1>JAVINIZER</h1>
-    <p class="lead">動画フォルダを選んで開始するだけです。確定できないファイルは自動整理の対象にしません。</p>
+    <p class="lead">動画フォルダ全体、または処理したい動画ファイルだけを選べます。確定できないファイルは自動整理の対象にしません。</p>
 
     <section>
-      <label>動画フォルダ</label>
+      <label>処理する動画</label>
       <div class="row">
-        <input id="root" readonly placeholder="フォルダを選択してください" />
-        <button id="chooseRoot">選択</button>
+        <input id="root" readonly placeholder="フォルダまたは動画ファイルを選択してください" />
+        <button id="chooseRoot">フォルダ選択</button>
+        <button id="chooseFiles">ファイル選択</button>
       </div>
+      <small id="selectionHint">フォルダ全体または複数の動画ファイルを指定できます。</small>
     </section>
 
     <section id="apiSection">

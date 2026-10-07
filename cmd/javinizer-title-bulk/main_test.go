@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -126,5 +127,79 @@ func TestBuildTitleWorkGroupsQualityVariantsOfOpaqueKey(t *testing.T) {
 	}
 	if len(tasks[0].Indices) != 2 {
 		t.Fatalf("indices=%v", tasks[0].Indices)
+	}
+}
+
+func TestScanMediaManifestProcessesOnlySelectedFiles(t *testing.T) {
+	dir := t.TempDir()
+	other := t.TempDir()
+	first := filepath.Join(dir, "ADN-444_作品A.mp4")
+	second := filepath.Join(other, "DASS-003_作品B.mkv")
+	unselected := filepath.Join(dir, "UNSELECTED-001.mp4")
+	for _, path := range []string{first, second, unselected} {
+		if err := os.WriteFile(path, []byte("video"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	manifest := filepath.Join(t.TempDir(), "selected.json")
+	raw, err := json.Marshal([]string{second, first, second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifest, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var progress []int
+	files, err := scanMediaManifest(manifest, func(n int) { progress = append(progress, n) }, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 2 {
+		t.Fatalf("files=%d, want 2", len(files))
+	}
+	got := map[string]bool{files[0].Path: true, files[1].Path: true}
+	if !got[first] || !got[second] || got[unselected] {
+		t.Fatalf("selected paths=%v", got)
+	}
+	for _, item := range files {
+		if item.Size != -1 || item.ModTimeNS != 0 {
+			t.Fatalf("skip-duplicate selected item collected metadata: %+v", item)
+		}
+	}
+	if len(progress) != 2 || progress[0] != 1 || progress[1] != 2 {
+		t.Fatalf("progress=%v, want [1 2]", progress)
+	}
+}
+
+func TestScanMediaManifestRejectsUnsupportedFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "notes.txt")
+	if err := os.WriteFile(path, []byte("not media"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	manifest := filepath.Join(t.TempDir(), "selected.json")
+	raw, err := json.Marshal([]string{path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifest, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := scanMediaManifest(manifest, nil, false); err == nil {
+		t.Fatal("unsupported selected file must fail closed")
+	}
+}
+
+func TestNormalizedSelectedMediaFilesDropsEmptyAndDuplicates(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "movie.mp4")
+	got := normalizedSelectedMediaFiles([]string{"", path, "  " + path + "  ", path})
+	if len(got) != 1 {
+		t.Fatalf("got=%v, want one unique path", got)
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[0] != abs {
+		t.Fatalf("got=%q, want %q", got[0], abs)
 	}
 }

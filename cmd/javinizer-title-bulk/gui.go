@@ -89,6 +89,22 @@ func (a *guiApp) SelectMediaFolder() (string, error) {
 	})
 }
 
+func (a *guiApp) SelectMediaFiles() ([]string, error) {
+	settings, _ := loadGUISettings()
+	defaultDir := strings.TrimSpace(settings.LastRoot)
+	if info, err := os.Stat(defaultDir); err != nil || !info.IsDir() {
+		defaultDir = ""
+	}
+	return runtime.OpenMultipleFilesDialog(a.ctx, runtime.OpenDialogOptions{
+		Title:            "処理する動画ファイルを選択",
+		DefaultDirectory: defaultDir,
+		Filters: []runtime.FileFilter{{
+			DisplayName: "動画ファイル (*.mp4;*.mkv;*.avi;*.wmv;*.flv;*.mov;*.m4v;*.ts;*.webm)",
+			Pattern:     "*.mp4;*.mkv;*.avi;*.wmv;*.flv;*.mov;*.m4v;*.ts;*.webm",
+		}},
+	})
+}
+
 func (a *guiApp) SelectOutputFolder() (string, error) {
 	return runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{
 		Title: "結果の保存先を選択",
@@ -109,6 +125,10 @@ func (a *guiApp) GetSettings() guiSettingsView {
 }
 
 func (a *guiApp) Start(root, outDir, apiKey string) guiRunResult {
+	return a.StartSelection(root, nil, outDir, apiKey)
+}
+
+func (a *guiApp) StartSelection(root string, selectedFiles []string, outDir, apiKey string) guiRunResult {
 	a.mu.Lock()
 	if a.running {
 		a.mu.Unlock()
@@ -136,12 +156,19 @@ func (a *guiApp) Start(root, outDir, apiKey string) guiRunResult {
 	a.mu.Unlock()
 	defer cancel()
 	root = strings.TrimSpace(root)
-	if root == "" {
-		return guiRunResult{Message: "動画フォルダを選択してください。"}
+	selectedFiles = normalizedSelectedMediaFiles(selectedFiles)
+	var err error
+	if root == "" && len(selectedFiles) == 0 {
+		return guiRunResult{Message: "動画フォルダまたは動画ファイルを選択してください。"}
 	}
-	info, err := os.Stat(root)
-	if err != nil || !info.IsDir() {
-		return guiRunResult{Message: "選択した動画フォルダを開けません。"}
+	if root != "" && len(selectedFiles) != 0 {
+		return guiRunResult{Message: "フォルダかファイルのどちらか一方を選択してください。"}
+	}
+	if root != "" {
+		info, statErr := os.Stat(root)
+		if statErr != nil || !info.IsDir() {
+			return guiRunResult{Message: "選択した動画フォルダを開けません。"}
+		}
 	}
 	outDir = strings.TrimSpace(outDir)
 	if outDir == "" {
@@ -176,7 +203,11 @@ func (a *guiApp) Start(root, outDir, apiKey string) guiRunResult {
 	if err != nil {
 		return guiRunResult{Message: fmt.Sprintf("APIキーを安全に保存できません: %v", err)}
 	}
-	settings.LastRoot = root
+	if root != "" {
+		settings.LastRoot = root
+	} else if len(selectedFiles) > 0 {
+		settings.LastRoot = filepath.Dir(selectedFiles[0])
+	}
 	settings.OutputDir = outDir
 	settings.EncryptedAPIKey = encrypted
 	if err := saveGUISettings(settings); err != nil {
@@ -192,15 +223,26 @@ func (a *guiApp) Start(root, outDir, apiKey string) guiRunResult {
 	if goruntime.GOOS == "darwin" {
 		workerCount = "8"
 	}
-	cmd := exec.CommandContext(runCtx, exe,
-		"-root", root,
+	args := []string{
 		"-out", outDir,
 		"-workers", workerCount,
 		"-skip-duplicates",
 		"-timeout", "20s",
 		"-max-attempts", "1",
 		"-retry-base-delay", "1s",
-	)
+	}
+	manifestPath := ""
+	if len(selectedFiles) > 0 {
+		manifestPath, err = writeSelectedFilesManifest(selectedFiles)
+		if err != nil {
+			return guiRunResult{Message: fmt.Sprintf("選択ファイル一覧を準備できません: %v", err)}
+		}
+		defer os.Remove(manifestPath)
+		args = append(args, "-files-manifest", manifestPath)
+	} else {
+		args = append(args, "-root", root)
+	}
+	cmd := exec.CommandContext(runCtx, exe, args...)
 	cmd.Env = append(os.Environ(), "TYPESAFE_API_KEY="+apiKey)
 	hideCommandWindow(cmd)
 
@@ -214,7 +256,11 @@ func (a *guiApp) Start(root, outDir, apiKey string) guiRunResult {
 	}
 	a.emitTiming(phaseTiming("gui", "config", "END", configBegan, began, nil))
 	childBegan := time.Now()
-	a.emitProgress("動画フォルダの処理を準備中")
+	if len(selectedFiles) > 0 {
+		a.emitProgress(fmt.Sprintf("選択した動画ファイル%d本の処理を準備中", len(selectedFiles)))
+	} else {
+		a.emitProgress("動画フォルダの処理を準備中")
+	}
 	a.emitTiming(phaseTiming("gui", "child_start", "START", childBegan, began, nil))
 	startErr := cmd.Start()
 	a.emitTiming(phaseTiming("gui", "child_start", "END", childBegan, began, startErr))
@@ -243,6 +289,51 @@ func (a *guiApp) Start(root, outDir, apiKey string) guiRunResult {
 	}
 	a.emitProgress("完了しました。")
 	return guiRunResult{Success: true, Message: "処理が完了しました。", OutputDir: outDir}
+}
+
+func normalizedSelectedMediaFiles(paths []string) []string {
+	seen := make(map[string]struct{}, len(paths))
+	out := make([]string, 0, len(paths))
+	for _, raw := range paths {
+		path := strings.TrimSpace(raw)
+		if path == "" {
+			continue
+		}
+		if abs, err := filepath.Abs(path); err == nil {
+			path = abs
+		}
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		out = append(out, path)
+	}
+	return out
+}
+
+func writeSelectedFilesManifest(paths []string) (string, error) {
+	f, err := os.CreateTemp("", "javinizer-selected-*.json")
+	if err != nil {
+		return "", err
+	}
+	name := f.Name()
+	cleanup := func() {
+		_ = f.Close()
+		_ = os.Remove(name)
+	}
+	if err := json.NewEncoder(f).Encode(paths); err != nil {
+		cleanup()
+		return "", err
+	}
+	if err := f.Sync(); err != nil {
+		cleanup()
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(name)
+		return "", err
+	}
+	return name, nil
 }
 
 func (a *guiApp) Cancel() bool {
