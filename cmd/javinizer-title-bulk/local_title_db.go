@@ -25,6 +25,33 @@ func defaultR18DumpPath() string {
 	return filepath.Join(base, "JAVINIZER", "r18dev", "r18dev_dump.db")
 }
 
+func resolveR18DumpPath(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		path = defaultR18DumpPath()
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("resolve local title database path: %w", err)
+	}
+	return abs, nil
+}
+
+// localTitleDBIdentity binds shared confirmed-cache entries to the exact local
+// DB file generation. Any dump replacement/index rebuild changes size or mtime
+// and therefore forces revalidation instead of silently reusing stale proof.
+func localTitleDBIdentity(path string) (string, error) {
+	abs, err := resolveR18DumpPath(path)
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Stat(abs)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%s|%d|%d", abs, info.Size(), info.ModTime().UnixNano()), nil
+}
+
 // prepareLocalTitleLookup makes the local title fast path self-contained for
 // the GUI. Existing databases are upgraded with the FTS5 title index once.
 // Missing dumps are unavailable during normal processing. Download/import is
@@ -34,13 +61,9 @@ func prepareLocalTitleLookup(ctx context.Context, path string) (*r18devdump.Stor
 }
 
 func prepareLocalTitleLookupWithDownload(ctx context.Context, path string, download bool) (*r18devdump.Store, error) {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		path = defaultR18DumpPath()
-	}
-	abs, err := filepath.Abs(path)
+	abs, err := resolveR18DumpPath(path)
 	if err != nil {
-		return nil, fmt.Errorf("resolve local title database path: %w", err)
+		return nil, err
 	}
 	path = abs
 

@@ -25,6 +25,29 @@ func (f *fakeTitleLookup) SearchByTitle(_ context.Context, _ string, _ int) ([]m
 	return f.matches, f.err
 }
 
+func (f *fakeTitleLookup) ExactTitleMatches(_ context.Context, _ string) ([]models.DumpTitleMatch, error) {
+	return f.matches, f.err
+}
+
+type splitExactTitleLookup struct {
+	searchMatches []models.DumpTitleMatch
+	exactMatches  []models.DumpTitleMatch
+	exactErr      error
+	searchCalls   int
+}
+
+func (f *splitExactTitleLookup) SearchByTitle(_ context.Context, _ string, _ int) ([]models.DumpTitleMatch, error) {
+	f.searchCalls++
+	return f.searchMatches, nil
+}
+
+func (f *splitExactTitleLookup) ExactTitleMatches(_ context.Context, _ string) ([]models.DumpTitleMatch, error) {
+	if f.exactErr != nil {
+		return nil, f.exactErr
+	}
+	return f.exactMatches, nil
+}
+
 type richFakeTitleLookup struct {
 	fakeTitleLookup
 	movie *models.DumpMovie
@@ -309,6 +332,22 @@ func TestResolveDecisionUniqueExactLocalTitleIsConfirmed(t *testing.T) {
 	}
 }
 
+func TestResolveDecisionShortUniqueExactLocalTitleRequiresReview(t *testing.T) {
+	lookup := &fakeTitleLookup{matches: []models.DumpTitleMatch{{
+		DVDID:   "KKV-538",
+		TitleJa: "me",
+		Score:   1.0,
+	}}}
+	resolver := NewTitleCatalogResolverWithLookup(&Config{}, lookup)
+	decision, err := resolver.ResolveDecision(context.Background(), "me")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Status != TitleDecisionReview || decision.CatalogID != "KKV-538" || decision.AutoOrganizeEligible() {
+		t.Fatalf("decision=%+v, want short exact title to remain review", decision)
+	}
+}
+
 func TestResolveDecisionDuplicateExactLocalTitlesRequireReview(t *testing.T) {
 	lookup := &fakeTitleLookup{matches: []models.DumpTitleMatch{
 		{DVDID: "ABC-001", TitleJa: "同一タイトル", Score: 1.0},
@@ -321,5 +360,124 @@ func TestResolveDecisionDuplicateExactLocalTitlesRequireReview(t *testing.T) {
 	}
 	if decision.Status != TitleDecisionReview || decision.AutoOrganizeEligible() {
 		t.Fatalf("decision=%+v", decision)
+	}
+}
+
+func TestAutoOrganizeEligibilityRequiresApprovedDecisiveEvidence(t *testing.T) {
+	tests := []struct {
+		name     string
+		decision TitleResolutionDecision
+		want     bool
+	}{
+		{"verified catalog", TitleResolutionDecision{Status: TitleDecisionConfirmed, CatalogID: "IPX-072", Method: "品番とローカルDBの完全一致"}, true},
+		{"db-bound catalog cache", TitleResolutionDecision{Status: TitleDecisionConfirmed, CatalogID: "IPX-072", Method: "品番とローカルDBの完全一致キャッシュ"}, true},
+		{"exact title", TitleResolutionDecision{Status: TitleDecisionConfirmed, CatalogID: "IPX-072", Method: "ローカルタイトル完全一致"}, true},
+		{"empty catalog", TitleResolutionDecision{Status: TitleDecisionConfirmed, Method: "品番とローカルDBの完全一致"}, false},
+		{"embedded title is file-specific", TitleResolutionDecision{Status: TitleDecisionConfirmed, CatalogID: "IPX-072", Method: "埋込タイトル→ローカルタイトル完全一致"}, false},
+		{"unapproved method", TitleResolutionDecision{Status: TitleDecisionConfirmed, CatalogID: "IPX-072", Method: "外部検索・Jevによる補助判定"}, false},
+		{"review", TitleResolutionDecision{Status: TitleDecisionReview, CatalogID: "IPX-072", Method: "品番とローカルDBの完全一致"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.decision.AutoOrganizeEligible(); got != tt.want {
+				t.Fatalf("eligible=%v, want %v: %+v", got, tt.want, tt.decision)
+			}
+		})
+	}
+}
+
+func TestResolveDecisionExactTitleWithConflictingCatalogTokenRequiresReview(t *testing.T) {
+	lookup := &fakeTitleLookup{matches: []models.DumpTitleMatch{{
+		DVDID:   "ABC-001",
+		TitleJa: "作品タイトル XYZ-999",
+		Score:   1.0,
+	}}}
+	resolver := NewTitleCatalogResolverWithLookup(&Config{}, lookup)
+	decision, err := resolver.ResolveDecision(context.Background(), "作品タイトル XYZ-999")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Status != TitleDecisionReview || decision.AutoOrganizeEligible() {
+		t.Fatalf("decision=%+v, want review due conflicting catalog evidence", decision)
+	}
+}
+
+func TestResolveDecisionUnsafeCatalogHintUsesLocalDBForReviewWithoutWeb(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		input string
+		id    string
+	}{
+		{name: "mid filename", input: "226655.xyz XVSR-688.mp4はPikPakで共有されています", id: "XVSR-688"},
+		{name: "glued japanese", input: "NACR-442若くて美しい父の二番目の妻", id: "NACR-442"},
+		{name: "legacy version marker", input: "ROYD-_v115【モザイク除去】タイトル", id: "ROYD-115"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			lookup := &richFakeTitleLookup{movie: &models.DumpMovie{DVDID: tc.id}}
+			resolver := NewTitleCatalogResolverWithLookup(&Config{}, lookup)
+			decision, err := resolver.ResolveDecision(context.Background(), tc.input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if decision.Status != TitleDecisionReview || decision.CatalogID != tc.id {
+				t.Fatalf("decision=%+v, want review %s", decision, tc.id)
+			}
+			if decision.AutoOrganizeEligible() {
+				t.Fatalf("unsafe catalog hint became auto-organize eligible: %+v", decision)
+			}
+			if decision.Method != "品番候補＋ローカルDB存在確認" {
+				t.Fatalf("method=%q", decision.Method)
+			}
+		})
+	}
+}
+
+func TestReviewOnlyCatalogHintPreservesEditionSuffix(t *testing.T) {
+	got := extractReviewOnlyCatalogCandidates("foo START-487-EC bar")
+	if len(got) != 1 || got[0] != "START-487-EC" {
+		t.Fatalf("review hints=%v, want exact START-487-EC without base collapse", got)
+	}
+}
+
+func TestResolveDecisionExactScoreLocalAmbiguityStopsAtReviewWithoutWeb(t *testing.T) {
+	lookup := &splitExactTitleLookup{
+		exactErr: models.ErrDumpMiss,
+		searchMatches: []models.DumpTitleMatch{
+			{DVDID: "DASD-864", Score: 1.0},
+			{DVDID: "4DAS864", Score: 1.0},
+		},
+	}
+	resolver := NewTitleCatalogResolverWithLookup(&Config{}, lookup)
+	resolver.scraper.httpClient = jevLookupHTTPClientFunc(func(*http.Request) (*http.Response, error) {
+		t.Fatal("known local ambiguity must not call Web")
+		return nil, nil
+	})
+	decision, err := resolver.ResolveDecision(context.Background(), "完全一致相当タイトル")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Status != TitleDecisionReview || decision.CatalogID != "" || decision.AutoOrganizeEligible() {
+		t.Fatalf("decision=%+v, want ambiguous review", decision)
+	}
+}
+
+func TestResolveDecisionSingleExactScoreWithoutGlobalProofStopsAtReview(t *testing.T) {
+	lookup := &splitExactTitleLookup{
+		exactErr: models.ErrDumpMiss,
+		searchMatches: []models.DumpTitleMatch{
+			{DVDID: "NKKD-287", Score: 1.0},
+		},
+	}
+	resolver := NewTitleCatalogResolverWithLookup(&Config{}, lookup)
+	resolver.scraper.httpClient = jevLookupHTTPClientFunc(func(*http.Request) (*http.Response, error) {
+		t.Fatal("strong local review candidate must not call Web")
+		return nil, nil
+	})
+	decision, err := resolver.ResolveDecision(context.Background(), "完全一致相当タイトル")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Status != TitleDecisionReview || decision.CatalogID != "NKKD-287" || decision.AutoOrganizeEligible() {
+		t.Fatalf("decision=%+v, want single-candidate review", decision)
 	}
 }

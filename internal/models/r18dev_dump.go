@@ -155,10 +155,16 @@ type R18DevDumpLookup interface {
 	Stats(ctx context.Context) (DumpStats, error)
 }
 
-
 // R18DevTitleLookup is the optional fast free-form title-search capability of
 // an r18.dev dump store. It is separate from R18DevDumpLookup so existing
 // consumers and test doubles do not need to implement title search.
 type R18DevTitleLookup interface {
 	SearchByTitle(ctx context.Context, title string, limit int) ([]DumpTitleMatch, error)
+}
+
+// R18DevExactTitleLookup proves DB-wide exact-title uniqueness. It is
+// deliberately separate from ranked fuzzy search because a top score is not
+// evidence that no additional exact-title row exists elsewhere in the dump.
+type R18DevExactTitleLookup interface {
+	ExactTitleMatches(ctx context.Context, title string) ([]DumpTitleMatch, error)
 }

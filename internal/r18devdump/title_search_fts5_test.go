@@ -155,3 +155,47 @@ func TestDedupeTitleMatchesPrefersHyphenatedCanonicalDisplayID(t *testing.T) {
 		t.Fatalf("DVDID=%q, want ABW-366", got[0].DVDID)
 	}
 }
+
+func TestExactTitleMatchesReturnsAllDuplicateCatalogs(t *testing.T) {
+	path := t.TempDir() + "/exact-duplicates.db"
+	dump := strings.Join([]string{
+		"COPY public.derived_video (content_id, dvd_id, title_ja) FROM stdin;",
+		"abc00001\tABC-001\t同一タイトル",
+		"abc00002\tABC-002\t同一タイトル",
+		"\\.",
+		"",
+	}, "\n")
+	if _, err := Import(context.Background(), strings.NewReader(dump), path, ImportOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	got, err := store.ExactTitleMatches(context.Background(), "同一タイトル")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].DVDID != "ABC-001" || got[1].DVDID != "ABC-002" {
+		t.Fatalf("matches=%+v, want both exact catalogs", got)
+	}
+}
+
+func TestExactTitleMatchesDoesNotNormalizeNearMatchIntoConfirmation(t *testing.T) {
+	path := t.TempDir() + "/strict-exact.db"
+	dump := "COPY public.derived_video (content_id, dvd_id, title_ja) FROM stdin;\nabc00001\tABC-001\t作品タイトル！\n\\.\n"
+	if _, err := Import(context.Background(), strings.NewReader(dump), path, ImportOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	if _, err := store.ExactTitleMatches(context.Background(), "作品タイトル"); !errors.Is(err, models.ErrDumpMiss) {
+		t.Fatalf("near match must not be exact proof: %v", err)
+	}
+}

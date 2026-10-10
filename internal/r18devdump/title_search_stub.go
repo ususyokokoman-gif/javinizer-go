@@ -18,3 +18,7 @@ func EnsureTitleSearchIndex(context.Context, string) error {
 func (s *Store) SearchByTitle(context.Context, string, int) ([]models.DumpTitleMatch, error) {
 	return nil, models.ErrDumpTitleSearchUnavailable
 }
+
+func (s *Store) ExactTitleMatches(context.Context, string) ([]models.DumpTitleMatch, error) {
+	return nil, models.ErrDumpTitleSearchUnavailable
+}

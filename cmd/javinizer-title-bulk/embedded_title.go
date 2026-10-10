@@ -93,48 +93,65 @@ func probeEmbeddedTitle(ctx context.Context, mediaPath string) (string, error) {
 func resolveWorkWithRetry(resolver titleResolver, mediaPath, input string, timeout time.Duration, maxAttempts int, baseDelay time.Duration, sleep func(time.Duration)) retryResolution {
 	began := time.Now()
 	prepared := scrape.PrepareTitleResolutionInput(input)
-	var embeddedReview *retryResolution
-	if prepared.Kind == scrape.TitleInputOpaque {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		embedded, probeErr := embeddedTitleProbe(ctx, mediaPath)
-		cancel()
-		if probeErr == nil && strings.TrimSpace(embedded) != "" {
-			embeddedPrepared := scrape.PrepareTitleResolutionInput(embedded)
-			if embeddedPrepared.Query != "" && embeddedPrepared.Kind != scrape.TitleInputOpaque && !strings.EqualFold(embeddedPrepared.Query, prepared.Query) {
-				fmt.Printf("EMBEDDED_TITLE=HIT input=%q title=%q\n", prepared.Query, embeddedPrepared.Query)
-				resolved := resolveTitleWithRetry(resolver, embeddedPrepared.Query, timeout, maxAttempts, baseDelay, sleep)
+	if prepared.Kind != scrape.TitleInputOpaque {
+		resolved := resolveTitleWithRetry(resolver, prepared.Query, timeout, maxAttempts, baseDelay, sleep)
+		resolved.ElapsedMS = time.Since(began).Milliseconds()
+		return resolved
+	}
+
+	// Precision-first bulk policy for opaque/download IDs:
+	// probe file-specific embedded metadata, but never turn that metadata into
+	// a broad Web title search. Only deterministic local evidence may produce
+	// a candidate, and even a local confirmation remains review because the
+	// embedded title is file-specific supporting evidence.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	embedded, probeErr := embeddedTitleProbe(ctx, mediaPath)
+	cancel()
+	if probeErr == nil && strings.TrimSpace(embedded) != "" {
+		embeddedPrepared := scrape.PrepareTitleResolutionInput(embedded)
+		if embeddedPrepared.Query != "" && embeddedPrepared.Kind != scrape.TitleInputOpaque && !strings.EqualFold(embeddedPrepared.Query, prepared.Query) {
+			fmt.Printf("EMBEDDED_TITLE=HIT input=%q title=%q\n", prepared.Query, embeddedPrepared.Query)
+			if localResolver, ok := resolver.(localOnlyTitleDecisionResolver); ok {
+				localCtx, localCancel := context.WithTimeout(context.Background(), timeout)
+				decision, err := localResolver.ResolveLocalOnlyDecision(localCtx, embeddedPrepared.Query)
+				localCancel()
+				resolved := retryResolution{
+					CatalogID: decision.CatalogID,
+					Status:    string(decision.Status),
+					Method:    decision.Method,
+					Reason:    decision.Reason,
+					Err:       err,
+					Attempts:  1,
+				}
 				if resolved.Status == "confirmed" {
+					resolved.Status = "review"
+					resolved.Method = "埋込タイトル→" + resolved.Method
+					resolved.Reason = "埋込タイトルからローカルDB上の一意候補を確認しましたが、埋込メタデータ単独では自動整理せず要確認とします。"
 					resolved.ElapsedMS = time.Since(began).Milliseconds()
 					return resolved
 				}
 				if resolved.Status == "review" {
-					copy := resolved
-					embeddedReview = &copy
+					resolved.Method = "埋込タイトル→" + resolved.Method
+					resolved.ElapsedMS = time.Since(began).Milliseconds()
+					return resolved
 				}
-				if resolved.Err != nil {
-					fmt.Printf("EMBEDDED_TITLE=FALLBACK input=%q error=%v\n", prepared.Query, resolved.Err)
-				} else {
-					fmt.Printf("EMBEDDED_TITLE=FALLBACK input=%q status=%s\n", prepared.Query, resolved.Status)
+				if resolved.Status == "error" && resolved.Err != nil {
+					resolved.Method = "埋込タイトル→" + resolved.Method
+					resolved.ElapsedMS = time.Since(began).Milliseconds()
+					return resolved
 				}
+				fmt.Printf("EMBEDDED_TITLE=LOCAL_MISS input=%q status=%s\n", prepared.Query, resolved.Status)
+			} else {
+				fmt.Printf("EMBEDDED_TITLE=LOCAL_RESOLVER_UNAVAILABLE input=%q\n", prepared.Query)
 			}
 		}
 	}
-	resolved := resolveTitleWithRetry(resolver, prepared.Query, timeout, maxAttempts, baseDelay, sleep)
-	// 埋込タイトル側に要確認候補があり、元の不明ID側では何も分からなかった場合は
-	// 候補だけ残す。ただし「確定」へ昇格はさせない。
-	if embeddedReview != nil && (resolved.Status == "unknown" || resolved.Status == "error") {
-		resolved = *embeddedReview
+
+	return retryResolution{
+		Status:    "unknown",
+		Method:    "不明ID＋埋込メタデータ確認",
+		Reason:    "不明IDと埋込メタデータから決定的なローカル証拠を得られなかったため、一般Web検索を行わず未特定とします。",
+		Attempts:  1,
+		ElapsedMS: time.Since(began).Milliseconds(),
 	}
-	// 埋込タイトルと不明ID逆引きで別候補が出た場合は矛盾として候補を消し、
-	// 要確認に固定する。多数決でどちらかを選ばない。
-	if embeddedReview != nil && resolved.Status == "review" &&
-		strings.TrimSpace(embeddedReview.CatalogID) != "" &&
-		strings.TrimSpace(resolved.CatalogID) != "" &&
-		!strings.EqualFold(embeddedReview.CatalogID, resolved.CatalogID) {
-		resolved.CatalogID = ""
-		resolved.Method = "埋込タイトルと不明IDの照合"
-		resolved.Reason = "埋込タイトル由来候補と不明ID逆引き候補が一致しないため、自動整理せず要確認とします。"
-	}
-	resolved.ElapsedMS = time.Since(began).Milliseconds()
-	return resolved
 }

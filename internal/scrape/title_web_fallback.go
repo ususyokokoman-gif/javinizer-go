@@ -105,6 +105,7 @@ func (s *Scraper) fetchDuckDuckGoTitleSearch(ctx context.Context, query string) 
 	if err := s.waitTitleSearchProvider(ctx, "duckduckgo"); err != nil {
 		return nil, err
 	}
+	defer s.doneTitleSearchProvider("duckduckgo")
 
 	endpoints := []string{
 		"https://html.duckduckgo.com/html/",
@@ -135,10 +136,12 @@ func (s *Scraper) fetchDuckDuckGoTitleSearch(ctx context.Context, query string) 
 		resp, err := s.httpClient.Do(req)
 		if err != nil {
 			lastErr = fmt.Errorf("DuckDuckGo request failed: %w", err)
+			s.markTitleSearchFailure("duckduckgo", lastErr)
 			continue
 		}
 		if resp == nil {
 			lastErr = fmt.Errorf("DuckDuckGo returned nil response")
+			s.markTitleSearchFailure("duckduckgo", lastErr)
 			continue
 		}
 		body := resp.Body
@@ -149,6 +152,9 @@ func (s *Scraper) fetchDuckDuckGoTitleSearch(ctx context.Context, query string) 
 			}
 			body.Close()
 			lastErr = fmt.Errorf("DuckDuckGo returned HTTP %d", resp.StatusCode)
+			if resp.StatusCode != http.StatusTooManyRequests {
+				s.markTitleSearchFailure("duckduckgo", lastErr)
+			}
 			continue
 		}
 		doc, parseErr := goquery.NewDocumentFromReader(io.LimitReader(body, maxWebSearchBody))
@@ -178,6 +184,7 @@ func (s *Scraper) fetchYahooJapanTitleSearch(ctx context.Context, query string) 
 	if err := s.waitTitleSearchProvider(ctx, "yahoojp"); err != nil {
 		return nil, err
 	}
+	defer s.doneTitleSearchProvider("yahoojp")
 
 	u, err := url.Parse("https://search.yahoo.co.jp/search")
 	if err != nil {
@@ -198,18 +205,25 @@ func (s *Scraper) fetchYahooJapanTitleSearch(ctx context.Context, query string) 
 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("Yahoo Japan request failed: %w", err)
+		wrapped := fmt.Errorf("Yahoo Japan request failed: %w", err)
+		s.markTitleSearchFailure("yahoojp", wrapped)
+		return nil, wrapped
 	}
 	if resp == nil {
-		return nil, fmt.Errorf("Yahoo Japan returned nil response")
+		wrapped := fmt.Errorf("Yahoo Japan returned nil response")
+		s.markTitleSearchFailure("yahoojp", wrapped)
+		return nil, wrapped
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		wrapped := fmt.Errorf("Yahoo Japan returned HTTP %d", resp.StatusCode)
 		if resp.StatusCode == http.StatusTooManyRequests {
 			s.recordTitleWebHTTP429()
 			s.markTitleSearchRateLimited("yahoojp", resp.Header.Get("Retry-After"))
+		} else {
+			s.markTitleSearchFailure("yahoojp", wrapped)
 		}
-		return nil, fmt.Errorf("Yahoo Japan returned HTTP %d", resp.StatusCode)
+		return nil, wrapped
 	}
 	doc, err := goquery.NewDocumentFromReader(io.LimitReader(resp.Body, maxWebSearchBody))
 	if err != nil {
@@ -282,6 +296,7 @@ func (s *Scraper) fetchBingTitleSearch(ctx context.Context, query string) ([]tit
 	if err := s.waitTitleSearchProvider(ctx, "bing"); err != nil {
 		return nil, err
 	}
+	defer s.doneTitleSearchProvider("bing")
 
 	u, err := url.Parse("https://www.bing.com/search")
 	if err != nil {
@@ -305,18 +320,25 @@ func (s *Scraper) fetchBingTitleSearch(ctx context.Context, query string) ([]tit
 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("Bing request failed: %w", err)
+		wrapped := fmt.Errorf("Bing request failed: %w", err)
+		s.markTitleSearchFailure("bing", wrapped)
+		return nil, wrapped
 	}
 	if resp == nil {
-		return nil, fmt.Errorf("Bing returned nil response")
+		wrapped := fmt.Errorf("Bing returned nil response")
+		s.markTitleSearchFailure("bing", wrapped)
+		return nil, wrapped
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		wrapped := fmt.Errorf("Bing returned HTTP %d", resp.StatusCode)
 		if resp.StatusCode == http.StatusTooManyRequests {
 			s.recordTitleWebHTTP429()
 			s.markTitleSearchRateLimited("bing", resp.Header.Get("Retry-After"))
+		} else {
+			s.markTitleSearchFailure("bing", wrapped)
 		}
-		return nil, fmt.Errorf("Bing returned HTTP %d", resp.StatusCode)
+		return nil, wrapped
 	}
 	doc, err := goquery.NewDocumentFromReader(io.LimitReader(resp.Body, maxWebSearchBody))
 	if err != nil {

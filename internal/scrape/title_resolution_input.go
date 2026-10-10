@@ -29,8 +29,9 @@ type PreparedTitleInput struct {
 }
 
 var (
-	trailingFilenameNoiseRE = regexp.MustCompile(`(?i)(?:[\s_.-]+(?:\d{3,4}p|[248]k|fhd|uhd|hdr10?|dv|dolbyvision|hevc|h26[45]|x26[45]|av1|aac|flac|web[-_.]?dl|webrip|bdrip|bluray|uncensored|uncen|sub|subs|subtitle|字幕|中字|中文字幕|中文|无码))+$`)
-	trailingPartNumberRE    = regexp.MustCompile(`^(.+?)[_-]([1-9]\d?)$`)
+	legacyVersionCatalogHintRE = regexp.MustCompile("(?i)^([a-z]{2,12})-?_v([0-9]{2,6})(?:[-_\\s\\[【(（]|$)")
+	trailingFilenameNoiseRE    = regexp.MustCompile(`(?i)(?:[\s_.-]+(?:\d{3,4}p|[248]k|fhd|uhd|hdr10?|dv|dolbyvision|hevc|h26[45]|x26[45]|av1|aac|flac|web[-_.]?dl|webrip|bdrip|bluray|uncensored|uncen|sub|subs|subtitle|字幕|中字|中文字幕|中文|无码))+$`)
+	trailingPartNumberRE       = regexp.MustCompile(`^(.+?)[_-]([1-9]\d?)$`)
 )
 
 // PrepareTitleResolutionInput converts a filename/path/title-like value into the
@@ -76,9 +77,10 @@ func PrepareTitleResolutionInput(input string) PreparedTitleInput {
 	if id := extractLeadingFilenameCatalogCandidate(query); id != "" {
 		return PreparedTitleInput{Raw: raw, Query: id, Kind: TitleInputCatalog}
 	}
-	if ids := uniqueNormalizedCatalogIDs(extractStandaloneCatalogCandidates(query)); len(ids) == 1 && !catalogCandidateHasUnsafeAttachedSuffix(ids[0]) {
-		return PreparedTitleInput{Raw: raw, Query: query, Kind: TitleInputCatalog}
-	}
+	// Precision-first: a catalog-looking token found in the middle of a
+	// descriptive filename is only candidate evidence. It must never promote
+	// the whole input to catalog/confirmed automatically. Only the proven
+	// leading-boundary path above is allowed to become TitleInputCatalog.
 	if looksOpaqueFilenameKey(query) {
 		return PreparedTitleInput{Raw: raw, Query: query, Kind: TitleInputOpaque}
 	}
@@ -140,13 +142,26 @@ func catalogCandidateHasUnsafeAttachedSuffix(id string) bool {
 	return true
 }
 
+func extractReviewOnlyCatalogCandidates(query string) []string {
+	// Review-only hints may be looser than confirmation evidence because they
+	// can never authorize automatic organization. This intentionally sees
+	// glued/mid-filename catalog-looking tokens that the standalone extractor
+	// rejects, then requires exact local-DB existence before returning review.
+	out := append([]string(nil), extractStandaloneCatalogCandidates(query)...)
+	out = append(out, webCatalogCandidateRE.FindAllString(query, -1)...)
+	if m := legacyVersionCatalogHintRE.FindStringSubmatch(strings.TrimSpace(query)); len(m) == 3 {
+		out = append(out, strings.ToUpper(m[1])+"-"+m[2])
+	}
+	return uniqueNormalizedCatalogIDs(out)
+}
+
 func looksOpaqueFilenameKey(s string) bool {
 	s = strings.TrimSpace(s)
 	if s == "" || strings.ContainsAny(s, " \t\r\n") {
 		return false
 	}
 	runes := []rune(s)
-	if len(runes) < 8 || len(runes) > 180 {
+	if len(runes) < 6 || len(runes) > 180 {
 		return false
 	}
 
@@ -166,11 +181,19 @@ func looksOpaqueFilenameKey(s string) bool {
 		}
 	}
 	if digits == len(runes) {
-		// Long numeric IDs (tweet/snowflake/content IDs) are strong opaque keys.
-		return len(runes) >= 10
+		// 6-7桁程度の配信/管理IDも実データに多い。タイトルとしてWeb検索しない。
+		return len(runes) >= 6
 	}
-	if letters == 0 || digits == 0 {
+	if letters == len(runes) {
+		// 長い英字だけの生成キーは、人間可読タイトルよりopaqueとして扱う方が安全。
+		return len(runes) >= 12
+	}
+	if letters == 0 {
 		return false
+	}
+	if digits == 0 {
+		// 英字＋区切りだけの長い生成キーもfail-closedでopaqueへ。
+		return len(runes) >= 12 && (strings.ContainsRune(s, '_') || strings.ContainsRune(s, '-') || strings.ContainsRune(s, '.'))
 	}
 
 	// Mixed single-token identifiers become opaque once they are long enough,

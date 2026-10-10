@@ -15,7 +15,7 @@ import (
 	"github.com/javinizer/javinizer-go/internal/scrape"
 )
 
-const bulkStateVersion = 8
+const bulkStateVersion = 10
 
 type titleResolver interface {
 	Resolve(context.Context, string) (string, error)
@@ -23,6 +23,10 @@ type titleResolver interface {
 
 type titleDecisionResolver interface {
 	ResolveDecision(context.Context, string) (scrape.TitleResolutionDecision, error)
+}
+
+type localOnlyTitleDecisionResolver interface {
+	ResolveLocalOnlyDecision(context.Context, string) (scrape.TitleResolutionDecision, error)
 }
 
 type fileStateRecord struct {
@@ -101,9 +105,9 @@ func loadPersistentState(path string) (persistentState, error) {
 			continue
 		}
 		if st.Version != bulkStateVersion {
-			// v8 では、ファイル名先頭の明確な品番をタイトルより先に分類する。
-			// task/cache key の意味が変わるため、旧stateの確定・要確認・未特定を
-			// 混在させず、現在の入力分類と判定基準で全件を再評価する。
+			// v9 では、中間位置の品番を確定禁止・opaqueをファイル単位化し、
+			// 旧stateの確定結果が新しいprecision-first判定を迂回しないよう
+			// 全件を現在の入力分類と判定基準で再評価する。
 			st = emptyPersistentState()
 		}
 		if st.Files == nil {
@@ -123,8 +127,20 @@ func (s *stateStore) cachedTitle(title string) (titleCacheRecord, bool) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Title-level state reuse is deliberately limited to catalog inputs.
+	// Title confirmation depends on the current DB-wide uniqueness proof, and
+	// opaque/embedded evidence is file-specific. Neither may be reused by a
+	// portable title key.
+	if !strings.HasPrefix(title, string(scrape.TitleInputCatalog)+"\x00") {
+		return titleCacheRecord{}, false
+	}
 	r, ok := s.state.Titles[title]
 	if !ok || !isTerminalStatus(r.Status) || r.PolicyVersion != scrape.TitleDecisionPolicyVersion {
+		return titleCacheRecord{}, false
+	}
+	// Even catalog confirmations are revalidated against the current local DB
+	// (or a DB-bound shared cache) before they can auto-organize.
+	if r.Status == "confirmed" {
 		return titleCacheRecord{}, false
 	}
 	return r, true
@@ -144,15 +160,20 @@ func (s *stateStore) recordTask(task titleWork, files []fileItem, status, catalo
 		s.state.Titles = make(map[string]titleCacheRecord)
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	s.state.Titles[task.cacheKey()] = titleCacheRecord{
-		CatalogID:     catalogID,
-		Status:        status,
-		Method:        method,
-		Reason:        reason,
-		PolicyVersion: scrape.TitleDecisionPolicyVersion,
-		Error:         errorText,
-		Attempts:      attempts,
-		UpdatedAt:     now,
+	// Only catalog inputs are portable across files/runs. Human-title
+	// uniqueness can change with the DB, and opaque/embedded evidence belongs
+	// to the individual media file.
+	if task.Kind == scrape.TitleInputCatalog {
+		s.state.Titles[task.cacheKey()] = titleCacheRecord{
+			CatalogID:     catalogID,
+			Status:        status,
+			Method:        method,
+			Reason:        reason,
+			PolicyVersion: scrape.TitleDecisionPolicyVersion,
+			Error:         errorText,
+			Attempts:      attempts,
+			UpdatedAt:     now,
+		}
 	}
 	for _, index := range task.Indices {
 		if index < 0 || index >= len(files) {

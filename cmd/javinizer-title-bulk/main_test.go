@@ -113,20 +113,25 @@ func TestBuildTitleWorkGroupsSameTitleAcrossFolders(t *testing.T) {
 	}
 }
 
-func TestBuildTitleWorkGroupsQualityVariantsOfOpaqueKey(t *testing.T) {
+func TestBuildTitleWorkSeparatesOpaqueFilesEvenWithSameKey(t *testing.T) {
 	files := []fileItem{
 		{Path: filepath.Join("set-01", "c9dqb3ybpvq80kae_720p.mp4")},
 		{Path: filepath.Join("set-02", "c9dqb3ybpvq80kae_1280p.mkv")},
 	}
 	tasks := buildTitleWork(files)
-	if len(tasks) != 1 {
-		t.Fatalf("tasks=%d, want 1", len(tasks))
+	if len(tasks) != 2 {
+		t.Fatalf("tasks=%d, want 2", len(tasks))
 	}
-	if tasks[0].Title != "c9dqb3ybpvq80kae" {
-		t.Fatalf("title=%q", tasks[0].Title)
+	for i, task := range tasks {
+		if task.Title != "c9dqb3ybpvq80kae" {
+			t.Fatalf("task %d title=%q", i, task.Title)
+		}
+		if len(task.Indices) != 1 {
+			t.Fatalf("task %d indices=%v, want one file", i, task.Indices)
+		}
 	}
-	if len(tasks[0].Indices) != 2 {
-		t.Fatalf("indices=%v", tasks[0].Indices)
+	if tasks[0].cacheKey() == tasks[1].cacheKey() {
+		t.Fatalf("opaque file-specific state keys must differ: %q", tasks[0].cacheKey())
 	}
 }
 

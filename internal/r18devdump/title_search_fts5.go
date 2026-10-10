@@ -18,7 +18,7 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
-const titleSearchIndexVersion = "1"
+const titleSearchIndexVersion = "2"
 
 // EnsureTitleSearchIndex upgrades an existing r18.dev dump in place with the
 // FTS5 trigram title index. This is intentionally separate from Open because
@@ -54,13 +54,11 @@ func buildTitleSearchIndex(ctx context.Context, db *sql.DB) error {
 	case err == nil && version == titleSearchIndexVersion:
 		var count int
 		if err := db.QueryRowContext(ctx,
-			"SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='video_titles_fts'",
-		).Scan(&count); err == nil && count == 1 {
+			"SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('video_titles_fts','video_titles_exact')",
+		).Scan(&count); err == nil && count == 2 {
 			return nil
 		}
 	case err != nil && !errors.Is(err, sql.ErrNoRows):
-		// Older sidecars can exist without dump_meta only if they are corrupt;
-		// surface that instead of silently falling back to slow HTTP forever.
 		if !strings.Contains(strings.ToLower(err.Error()), "no such table") {
 			return fmt.Errorf("read title index version: %w", err)
 		}
@@ -80,37 +78,126 @@ func buildTitleSearchIndex(ctx context.Context, db *sql.DB) error {
 	if _, err := tx.ExecContext(ctx, "DROP TABLE IF EXISTS video_titles_fts"); err != nil {
 		return fmt.Errorf("drop old title index: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `
-		CREATE VIRTUAL TABLE video_titles_fts USING fts5(
-			content_id UNINDEXED,
-			dvd_id UNINDEXED,
-			title_ja,
-			title_en,
-			tokenize='trigram'
-		)
-	`); err != nil {
+	if _, err := tx.ExecContext(ctx,
+		"CREATE VIRTUAL TABLE video_titles_fts USING fts5(content_id UNINDEXED, dvd_id UNINDEXED, title_ja, title_en, tokenize='trigram')",
+	); err != nil {
 		return fmt.Errorf("create title FTS index: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO video_titles_fts(content_id, dvd_id, title_ja, title_en)
-		SELECT content_id, COALESCE(dvd_id,''), COALESCE(title_ja,''), COALESCE(title_en,'')
-		FROM videos
-		WHERE dvd_id IS NOT NULL
-		  AND dvd_id <> ''
-		  AND (COALESCE(title_ja,'') <> '' OR COALESCE(title_en,'') <> '')
-	`); err != nil {
+	if _, err := tx.ExecContext(ctx,
+		"INSERT INTO video_titles_fts(content_id, dvd_id, title_ja, title_en) "+
+			"SELECT content_id, COALESCE(dvd_id,''), COALESCE(title_ja,''), COALESCE(title_en,'') "+
+			"FROM videos WHERE dvd_id IS NOT NULL AND dvd_id <> '' "+
+			"AND (COALESCE(title_ja,'') <> '' OR COALESCE(title_en,'') <> '')",
+	); err != nil {
 		return fmt.Errorf("populate title FTS index: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx,
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit title FTS index build: %w", err)
+	}
+	rollback = false
+
+	if err := rebuildExactTitleIndex(ctx, db); err != nil {
+		return err
+	}
+	if _, err := db.ExecContext(ctx,
 		"INSERT OR REPLACE INTO dump_meta(key,value) VALUES('title_search_index_version', ?)",
 		titleSearchIndexVersion,
 	); err != nil {
 		return fmt.Errorf("write title index version: %w", err)
 	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit title index build: %w", err)
+	return nil
+}
+
+type exactTitleIndexRow struct {
+	rowID     int64
+	contentID string
+	dvdID     string
+	titleJa   string
+	titleEn   string
+}
+
+func rebuildExactTitleIndex(ctx context.Context, db *sql.DB) error {
+	if _, err := db.ExecContext(ctx, "DROP TABLE IF EXISTS video_titles_exact"); err != nil {
+		return fmt.Errorf("drop old exact title index: %w", err)
 	}
-	rollback = false
+	if _, err := db.ExecContext(ctx,
+		"CREATE TABLE video_titles_exact ("+
+			"normalized_title TEXT NOT NULL,"+
+			"content_id TEXT NOT NULL,"+
+			"dvd_id TEXT NOT NULL,"+
+			"PRIMARY KEY(normalized_title, content_id, dvd_id)"+
+			") WITHOUT ROWID",
+	); err != nil {
+		return fmt.Errorf("create exact title index: %w", err)
+	}
+
+	const batchSize = 5000
+	var lastRowID int64
+	for {
+		rows, err := db.QueryContext(ctx,
+			"SELECT rowid, content_id, COALESCE(dvd_id,''), COALESCE(title_ja,''), COALESCE(title_en,'') "+
+				"FROM videos WHERE rowid > ? AND dvd_id IS NOT NULL AND dvd_id <> '' "+
+				"AND (COALESCE(title_ja,'') <> '' OR COALESCE(title_en,'') <> '') "+
+				"ORDER BY rowid LIMIT ?",
+			lastRowID, batchSize,
+		)
+		if err != nil {
+			return fmt.Errorf("scan videos for exact title index: %w", err)
+		}
+
+		batch := make([]exactTitleIndexRow, 0, batchSize)
+		for rows.Next() {
+			var row exactTitleIndexRow
+			if err := rows.Scan(&row.rowID, &row.contentID, &row.dvdID, &row.titleJa, &row.titleEn); err != nil {
+				_ = rows.Close()
+				return fmt.Errorf("scan exact title source row: %w", err)
+			}
+			batch = append(batch, row)
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("iterate exact title source rows: %w", err)
+		}
+		_ = rows.Close()
+		if len(batch) == 0 {
+			break
+		}
+
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("begin exact title index batch: %w", err)
+		}
+		stmt, err := tx.PrepareContext(ctx,
+			"INSERT OR IGNORE INTO video_titles_exact(normalized_title,content_id,dvd_id) VALUES(?,?,?)",
+		)
+		if err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("prepare exact title index insert: %w", err)
+		}
+		for _, row := range batch {
+			seen := make(map[string]struct{}, 2)
+			for _, title := range []string{row.titleJa, row.titleEn} {
+				normalized := normalizeExactTitle(stripCommonFilenamePrefix(title))
+				if normalized == "" {
+					continue
+				}
+				if _, exists := seen[normalized]; exists {
+					continue
+				}
+				seen[normalized] = struct{}{}
+				if _, err := stmt.ExecContext(ctx, normalized, row.contentID, row.dvdID); err != nil {
+					_ = stmt.Close()
+					_ = tx.Rollback()
+					return fmt.Errorf("populate exact title index: %w", err)
+				}
+			}
+		}
+		_ = stmt.Close()
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit exact title index batch: %w", err)
+		}
+		lastRowID = batch[len(batch)-1].rowID
+	}
 	return nil
 }
 
@@ -201,6 +288,56 @@ func (s *Store) SearchByTitle(ctx context.Context, query string, limit int) ([]m
 	if len(out) > limit {
 		out = out[:limit]
 	}
+	return out, nil
+}
+
+// ExactTitleMatches returns every distinct display catalog whose stored
+// Japanese or English title exactly equals the query after deterministic
+// leading-noise removal. It has no candidate-count cutoff.
+func (s *Store) ExactTitleMatches(ctx context.Context, query string) ([]models.DumpTitleMatch, error) {
+	if s == nil || s.db == nil {
+		return nil, models.ErrDumpMiss
+	}
+	query = strings.TrimSpace(stripCommonFilenamePrefix(query))
+	normalized := normalizeExactTitle(query)
+	if normalized == "" {
+		return nil, models.ErrDumpMiss
+	}
+
+	rows, err := s.db.QueryContext(ctx,
+		"SELECT content_id, dvd_id FROM video_titles_exact WHERE normalized_title = ? ORDER BY dvd_id, content_id",
+		normalized,
+	)
+	if err != nil {
+		lower := strings.ToLower(err.Error())
+		if strings.Contains(lower, "no such table") {
+			return nil, models.ErrDumpTitleSearchUnavailable
+		}
+		return nil, fmt.Errorf("dump exact normalized title search %q: %w", query, err)
+	}
+	defer rows.Close()
+
+	out := make([]models.DumpTitleMatch, 0, 4)
+	for rows.Next() {
+		var m models.DumpTitleMatch
+		if err := rows.Scan(&m.ContentID, &m.DVDID); err != nil {
+			return nil, fmt.Errorf("scan dump exact title search: %w", err)
+		}
+		m.DVDID = strings.TrimSpace(m.DVDID)
+		if m.DVDID == "" {
+			continue
+		}
+		m.Score = 1
+		out = append(out, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate dump exact title search: %w", err)
+	}
+	if len(out) == 0 {
+		return nil, models.ErrDumpMiss
+	}
+	out = dedupeTitleMatchesByDisplayID(out)
+	sort.Slice(out, func(i, j int) bool { return out[i].DVDID < out[j].DVDID })
 	return out, nil
 }
 
@@ -471,6 +608,22 @@ func displayIDPreference(id string) int {
 
 func isPreferredDisplayID(id string) bool {
 	return displayIDPreference(id) > 0
+}
+
+// normalizeExactTitle is intentionally much narrower than the fuzzy-search
+// normalizer. Automatic confirmation may ignore only case and whitespace.
+// Punctuation/symbol differences remain meaningful so near titles such as
+// "作品タイトル" and "作品タイトル！" cannot collapse into one proof key.
+func normalizeExactTitle(s string) string {
+	s = strings.TrimSpace(s)
+	var b strings.Builder
+	for _, r := range s {
+		if unicode.IsSpace(r) {
+			continue
+		}
+		b.WriteRune(unicode.ToLower(r))
+	}
+	return b.String()
 }
 
 func normalizeTitleSearch(s string) string {

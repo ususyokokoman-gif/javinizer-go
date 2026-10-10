@@ -251,6 +251,14 @@ func retryGoogleSearchWithBrowser(ctx context.Context, endpoint, reason string, 
 	return nil, fmt.Errorf("Google HTTP search %s; browser fallback failed: %w", reason, browserErr)
 }
 
+func (s *Scraper) retryGoogleSearchWithBrowserGuarded(ctx context.Context, endpoint, reason string, originalErr error) ([]titleWebSearchResult, error) {
+	results, err := retryGoogleSearchWithBrowser(ctx, endpoint, reason, originalErr)
+	if err == nil {
+		s.markTitleSearchSuccess("google")
+	}
+	return results, err
+}
+
 func (s *Scraper) fetchTitleWebSearch(ctx context.Context, provider, query string) ([]titleWebSearchResult, error) {
 	if provider != "google" {
 		return nil, fmt.Errorf("unsupported web search provider %q; Google is the only provider", provider)
@@ -261,6 +269,7 @@ func (s *Scraper) fetchTitleWebSearch(ctx context.Context, provider, query strin
 	if err := s.waitTitleSearchProvider(ctx, "google"); err != nil {
 		return nil, err
 	}
+	defer s.doneTitleSearchProvider("google")
 	headlessAllowed := s.cfg == nil || !s.cfg.DisableHeadlessTitleSearch
 
 	endpoint := "https://www.google.com/search?hl=ja&num=10&filter=0&pws=0&safe=off&q=" + url.QueryEscape(query)
@@ -280,16 +289,20 @@ func (s *Scraper) fetchTitleWebSearch(ctx context.Context, provider, query strin
 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
+		wrapped := fmt.Errorf("Google search request failed: %w", err)
+		s.markTitleSearchFailure("google", wrapped)
 		if ctx.Err() != nil || !headlessAllowed {
-			return nil, fmt.Errorf("Google search request failed: %w", err)
+			return nil, wrapped
 		}
-		return retryGoogleSearchWithBrowser(ctx, endpoint, "request failed", err)
+		return s.retryGoogleSearchWithBrowserGuarded(ctx, endpoint, "request failed", err)
 	}
 	if resp == nil {
+		wrapped := fmt.Errorf("Google search returned nil response")
+		s.markTitleSearchFailure("google", wrapped)
 		if !headlessAllowed {
-			return nil, fmt.Errorf("Google search returned nil response")
+			return nil, wrapped
 		}
-		return retryGoogleSearchWithBrowser(ctx, endpoint, "returned nil response", nil)
+		return s.retryGoogleSearchWithBrowserGuarded(ctx, endpoint, "returned nil response", nil)
 	}
 	defer resp.Body.Close()
 
@@ -297,21 +310,25 @@ func (s *Scraper) fetchTitleWebSearch(ctx context.Context, provider, query strin
 		if resp.StatusCode == http.StatusTooManyRequests {
 			s.recordTitleWebHTTP429()
 		}
-		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusForbidden {
+		wrapped := fmt.Errorf("Google search returned HTTP %d", resp.StatusCode)
+		if resp.StatusCode == http.StatusTooManyRequests {
 			s.markTitleSearchRateLimited("google", resp.Header.Get("Retry-After"))
+		} else {
+			s.markTitleSearchFailure("google", wrapped)
 		}
 		if headlessAllowed && shouldUseHeadlessGoogleFallback(resp.StatusCode) {
-			return retryGoogleSearchWithBrowser(ctx, endpoint, fmt.Sprintf("returned HTTP %d", resp.StatusCode), nil)
+			return s.retryGoogleSearchWithBrowserGuarded(ctx, endpoint, fmt.Sprintf("returned HTTP %d", resp.StatusCode), nil)
 		}
-		return nil, fmt.Errorf("Google search returned HTTP %d", resp.StatusCode)
+		return nil, wrapped
 	}
 
 	doc, err := goquery.NewDocumentFromReader(io.LimitReader(resp.Body, maxWebSearchBody))
 	if err != nil {
+		wrapped := fmt.Errorf("parse Google search page: %w", err)
 		if !headlessAllowed {
-			return nil, fmt.Errorf("parse Google search page: %w", err)
+			return nil, wrapped
 		}
-		return retryGoogleSearchWithBrowser(ctx, endpoint, "returned unparsable HTML", err)
+		return s.retryGoogleSearchWithBrowserGuarded(ctx, endpoint, "returned unparsable HTML", err)
 	}
 	results := parseTitleWebResults("google", doc)
 	if isGoogleSearchInterstitial(doc, results) {
@@ -319,13 +336,13 @@ func (s *Scraper) fetchTitleWebSearch(ctx context.Context, provider, query strin
 		if !headlessAllowed {
 			return nil, fmt.Errorf("Google returned an interstitial instead of search results")
 		}
-		return retryGoogleSearchWithBrowser(ctx, endpoint, "returned an interstitial instead of search results", nil)
+		return s.retryGoogleSearchWithBrowserGuarded(ctx, endpoint, "returned an interstitial instead of search results", nil)
 	}
 	if len(results) == 0 {
 		if !headlessAllowed {
 			return nil, fmt.Errorf("Google returned no parseable organic results")
 		}
-		return retryGoogleSearchWithBrowser(ctx, endpoint, "returned no parseable organic results", nil)
+		return s.retryGoogleSearchWithBrowserGuarded(ctx, endpoint, "returned no parseable organic results", nil)
 	}
 	s.markTitleSearchSuccess("google")
 	return results, nil

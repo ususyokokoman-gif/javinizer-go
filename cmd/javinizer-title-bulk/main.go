@@ -57,13 +57,36 @@ type resultRecord struct {
 }
 
 type titleWork struct {
-	Kind    scrape.TitleInputKind
-	Title   string
-	Indices []int
+	Kind     scrape.TitleInputKind
+	Title    string
+	Indices  []int
+	StateKey string
 }
 
 func (w titleWork) cacheKey() string {
+	if strings.TrimSpace(w.StateKey) != "" {
+		return w.StateKey
+	}
 	return string(w.Kind) + "\x00" + strings.ToLower(strings.TrimSpace(w.Title))
+}
+
+func autoOrganizeEligible(status, catalogID, method string) bool {
+	decision := scrape.TitleResolutionDecision{
+		Status:    scrape.TitleDecisionStatus(status),
+		CatalogID: catalogID,
+		Method:    method,
+	}
+	return decision.AutoOrganizeEligible()
+}
+
+func countAutoOrganizeEligible(rows []resultRecord) int {
+	count := 0
+	for _, row := range rows {
+		if row.AutoOrganizeEligible {
+			count++
+		}
+	}
+	return count
 }
 
 type titleWorkResult struct {
@@ -138,10 +161,6 @@ func main() {
 	if *retryBase < 0 {
 		fatalf("-retry-base-delay must be >= 0")
 	}
-	if strings.TrimSpace(os.Getenv("TYPESAFE_API_KEY")) == "" {
-		fatalf("TYPESAFE_API_KEY is required")
-	}
-
 	absRoot := ""
 	absManifest := ""
 	var err error
@@ -260,23 +279,6 @@ func main() {
 	for taskIndex, task := range tasks {
 		cached, ok := store.cachedTitle(task.cacheKey())
 		if !ok {
-			if id, hit, cacheErr := resolutionCache.Get(task.Kind, task.Title); cacheErr != nil {
-				fatalf("read shared resolution cache: %v", cacheErr)
-			} else if hit {
-				cached = titleCacheRecord{
-					CatalogID: id,
-					Status:    "confirmed",
-					Method:    "安全確認済み結果の再利用",
-					Reason:    "現行の安全判定方式で確定済みの結果を再利用しました。",
-					UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
-				}
-				ok = true
-				if err := store.recordTask(task, unique, "confirmed", id, cached.Method, cached.Reason, "", 0); err != nil {
-					fatalf("record shared-cache hit in state: %v", err)
-				}
-			}
-		}
-		if !ok {
 			pending = append(pending, taskIndex)
 			continue
 		}
@@ -294,7 +296,7 @@ func main() {
 				Method:                cached.Method,
 				Reason:                cached.Reason,
 				DecisionPolicyVersion: scrape.TitleDecisionPolicyVersion,
-				AutoOrganizeEligible:  cached.Status == "confirmed",
+				AutoOrganizeEligible:  autoOrganizeEligible(cached.Status, cached.CatalogID, cached.Method),
 				Error:                 cached.Error,
 				Attempts:              cached.Attempts,
 				Cached:                true,
@@ -312,17 +314,17 @@ func main() {
 		}
 		cachedFiles.Add(int64(groupSize))
 	}
-	fmt.Printf("TITLES_CACHED=%d\n", cachedTitles)
-	fmt.Printf("FILES_CACHED=%d\n", cachedFiles.Load())
-
 	cfg := &scrape.Config{
-		JevCatalogEnabled:   true,
+		// Jev is an optional ambiguity/fallback aid. Deterministic local
+		// identification must continue without an API credential.
+		JevCatalogEnabled:   strings.TrimSpace(os.Getenv("TYPESAFE_API_KEY")) != "",
 		JevCatalogThreshold: 0.80,
 		JevCatalogModel:     "jev-latest",
 	}
 
 	var resolver *scrape.TitleCatalogResolver
 	var titleDBCloser interface{ Close() error }
+	dbIdentity := ""
 	dbDone := beginCLIPhase("local_db_open")
 	if len(pending) == 0 {
 		fmt.Println("TITLE_DB=SKIPPED_ALL_CACHED")
@@ -336,6 +338,12 @@ func main() {
 		} else {
 			titleDBCloser = titleDB
 			resolver = scrape.NewTitleCatalogResolverWithLookup(cfg, titleDB)
+			if identity, identityErr := localTitleDBIdentity(*r18Dump); identityErr == nil {
+				dbIdentity = identity
+			} else {
+				dbIdentity = ""
+				fmt.Printf("RESOLUTION_CACHE_DB_IDENTITY=UNAVAILABLE error=%q\n", identityErr.Error())
+			}
 			fmt.Println("TITLE_RESOLUTION=LOCAL_R18_THEN_JEV_THEN_WEB")
 		}
 	} else {
@@ -346,6 +354,59 @@ func main() {
 	if titleDBCloser != nil {
 		defer func() { _ = titleDBCloser.Close() }()
 	}
+
+	// Shared confirmed cache can only be consulted after the current local DB
+	// has opened successfully and its generation identity is known. This keeps
+	// a stale/corrupt/unavailable DB from being bypassed by an old confirmation.
+	if dbIdentity != "" && len(pending) > 0 {
+		nextPending := make([]int, 0, len(pending))
+		for _, taskIndex := range pending {
+			task := tasks[taskIndex]
+			id, hit, cacheErr := resolutionCache.Get(task.Kind, task.Title, dbIdentity)
+			if cacheErr != nil {
+				fatalf("read shared resolution cache: %v", cacheErr)
+			}
+			if !hit {
+				nextPending = append(nextPending, taskIndex)
+				continue
+			}
+			cached := titleCacheRecord{
+				CatalogID:     id,
+				Status:        "confirmed",
+				Method:        "品番とローカルDBの完全一致キャッシュ",
+				Reason:        "同一のローカル作品DB世代で品番完全一致を確認済みのcatalog結果を再利用しました。",
+				PolicyVersion: scrape.TitleDecisionPolicyVersion,
+				UpdatedAt:     time.Now().UTC().Format(time.RFC3339Nano),
+			}
+			if err := store.recordTask(task, unique, cached.Status, cached.CatalogID, cached.Method, cached.Reason, "", 0); err != nil {
+				fatalf("record shared-cache hit in state: %v", err)
+			}
+			cachedTitles++
+			groupSize := len(task.Indices)
+			for _, fileIndex := range task.Indices {
+				item := unique[fileIndex]
+				rows[fileIndex] = resultRecord{
+					Path:                  item.Path,
+					Filename:              filepath.Base(item.Path),
+					Title:                 task.Title,
+					CatalogID:             cached.CatalogID,
+					Status:                cached.Status,
+					StatusJapanese:        decisionStatusJapanese(cached.Status),
+					Method:                cached.Method,
+					Reason:                cached.Reason,
+					DecisionPolicyVersion: scrape.TitleDecisionPolicyVersion,
+					AutoOrganizeEligible:  autoOrganizeEligible(cached.Status, cached.CatalogID, cached.Method),
+					Attempts:              0,
+					Cached:                true,
+				}
+			}
+			confirmed.Add(int64(groupSize))
+			cachedFiles.Add(int64(groupSize))
+		}
+		pending = nextPending
+	}
+	fmt.Printf("TITLES_CACHED=%d\n", cachedTitles)
+	fmt.Printf("FILES_CACHED=%d\n", cachedFiles.Load())
 
 	workerCount := *workers
 	if workerCount > len(pending) {
@@ -420,7 +481,7 @@ func main() {
 				Method:                res.Method,
 				Reason:                res.Reason,
 				DecisionPolicyVersion: scrape.TitleDecisionPolicyVersion,
-				AutoOrganizeEligible:  res.Status == "confirmed",
+				AutoOrganizeEligible:  autoOrganizeEligible(res.Status, res.CatalogID, res.Method),
 				Error:                 res.Error,
 				ElapsedMS:             res.ElapsedMS,
 				Attempts:              res.Attempts,
@@ -444,7 +505,7 @@ func main() {
 		// 共有キャッシュへ保存するのは「確定」だけ。要確認・未特定は
 		// 将来の判定改善や別ソース追加で再評価できるよう共有確定結果にしない。
 		if res.Status == "confirmed" && strings.TrimSpace(res.CatalogID) != "" {
-			if err := resolutionCache.Put(task.Kind, task.Title, res.CatalogID); err != nil {
+			if err := resolutionCache.Put(task.Kind, task.Title, res.CatalogID, dbIdentity); err != nil {
 				fatalf("write shared resolution cache: %v", err)
 			}
 		}
@@ -487,7 +548,7 @@ func main() {
 	summary := fmt.Sprintf(
 		"処理結果=完了\n判定基準版=%d\n%s=%s\n状態ファイル=%s\n再開機能=%t\n総ファイル数=%d\n重複確認数=%d\n判定対象数=%d\n検索単位数=%d\n再利用した検索単位=%d\n今回判定した検索単位=%d\n確定=%d\n要確認=%d\n未特定=%d\nエラー=%d\n自動整理対象=%d\n再利用ファイル=%d\n並列数=%d\n実使用並列数=%d\n最大試行回数=%d\n再試行基本待機=%s\n保存間隔=%d\n処理時間秒=%.2f\n1秒あたり処理数=%.3f\nP50=%dms\nP95=%dms\nWeb検索数=%d\n429件数=%d\n",
 		scrape.TitleDecisionPolicyVersion, targetSummaryLabel, targetSummary, resolvedStatePath, *resume, len(files), len(duplicates), len(rows), len(tasks), cachedTitles, len(pending),
-		confirmed.Load(), review.Load(), unknown.Load(), failed.Load(), confirmed.Load(), cachedFiles.Load(),
+		confirmed.Load(), review.Load(), unknown.Load(), failed.Load(), countAutoOrganizeEligible(rows), cachedFiles.Load(),
 		*workers, workerCount, *maxAttempts, retryBase.String(), checkpointEvery, elapsed.Seconds(), rate,
 		p50MS, p95MS, resolutionMetrics.WebSearches, resolutionMetrics.HTTP429,
 	)
@@ -622,6 +683,18 @@ func buildTitleWork(files []fileItem) []titleWork {
 		prepared := scrape.PrepareTitleResolutionInput(file.Path)
 		title := prepared.Query
 		cacheKey := string(prepared.Kind) + "\x00" + strings.ToLower(title)
+		if prepared.Kind == scrape.TitleInputOpaque {
+			// Embedded metadata is file-specific evidence. Never group two files
+			// merely because their opaque key is the same; each file must be
+			// probed and judged independently.
+			tasks = append(tasks, titleWork{
+				Kind:     prepared.Kind,
+				Title:    title,
+				Indices:  []int{i},
+				StateKey: cacheKey + "\x00file\x00" + filepath.Clean(file.Path),
+			})
+			continue
+		}
 		if taskIndex, ok := indexByTitle[cacheKey]; ok {
 			tasks[taskIndex].Indices = append(tasks[taskIndex].Indices, i)
 			continue

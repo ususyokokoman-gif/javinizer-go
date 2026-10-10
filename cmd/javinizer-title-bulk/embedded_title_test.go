@@ -2,9 +2,10 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"testing"
 	"time"
+
+	"github.com/javinizer/javinizer-go/internal/scrape"
 )
 
 type titleResolverFunc func(context.Context, string) (string, error)
@@ -13,28 +14,48 @@ func (f titleResolverFunc) Resolve(ctx context.Context, title string) (string, e
 	return f(ctx, title)
 }
 
-func TestResolveWorkUsesEmbeddedHumanTitleBeforeOpaqueWebLookup(t *testing.T) {
+type localOnlyResolverStub struct {
+	resolveCalls  []string
+	localCalls    []string
+	localDecision scrape.TitleResolutionDecision
+	localErr      error
+}
+
+func (r *localOnlyResolverStub) Resolve(_ context.Context, title string) (string, error) {
+	r.resolveCalls = append(r.resolveCalls, title)
+	return "", nil
+}
+
+func (r *localOnlyResolverStub) ResolveLocalOnlyDecision(_ context.Context, title string) (scrape.TitleResolutionDecision, error) {
+	r.localCalls = append(r.localCalls, title)
+	return r.localDecision, r.localErr
+}
+
+func TestResolveWorkUsesEmbeddedTitleLocalOnlyForOpaqueInput(t *testing.T) {
 	original := embeddedTitleProbe
 	defer func() { embeddedTitleProbe = original }()
 	embeddedTitleProbe = func(context.Context, string) (string, error) {
 		return "狙われた通学路 共謀痴漢電車 桃乃木かな", nil
 	}
 
-	var calls []string
-	resolver := titleResolverFunc(func(_ context.Context, title string) (string, error) {
-		calls = append(calls, title)
-		if title == "狙われた通学路 共謀痴漢電車 桃乃木かな" {
-			return "IPX-072", nil
-		}
-		return "", fmt.Errorf("unexpected query %q", title)
-	})
-
+	resolver := &localOnlyResolverStub{localDecision: scrape.TitleResolutionDecision{
+		Status:    scrape.TitleDecisionConfirmed,
+		CatalogID: "IPX-072",
+		Method:    "ローカルタイトル完全一致",
+		Reason:    "test",
+	}}
 	got := resolveWorkWithRetry(resolver, "/tmp/a.mp4", "c9dqb3ybpvq80kae_1280p", time.Second, 1, 0, func(time.Duration) {})
-	if got.Err != nil || got.CatalogID != "IPX-072" {
+	if got.Err != nil || got.CatalogID != "IPX-072" || got.Status != "review" {
 		t.Fatalf("resolution=%+v", got)
 	}
-	if len(calls) != 1 || calls[0] != "狙われた通学路 共謀痴漢電車 桃乃木かな" {
-		t.Fatalf("calls=%v", calls)
+	if len(resolver.localCalls) != 1 || resolver.localCalls[0] != "狙われた通学路 共謀痴漢電車 桃乃木かな" {
+		t.Fatalf("localCalls=%v", resolver.localCalls)
+	}
+	if len(resolver.resolveCalls) != 0 {
+		t.Fatalf("opaque embedded path called general resolver/Web path: %v", resolver.resolveCalls)
+	}
+	if got.Method != "埋込タイトル→ローカルタイトル完全一致" {
+		t.Fatalf("method=%q", got.Method)
 	}
 }
 
@@ -62,30 +83,43 @@ func TestResolveWorkDoesNotProbeEmbeddedTitleForHumanTitle(t *testing.T) {
 	}
 }
 
-func TestResolveWorkFallsBackToOpaqueKeyWhenEmbeddedTitleFails(t *testing.T) {
+func TestResolveWorkOpaqueEmbeddedLocalMissNeverCallsGeneralResolver(t *testing.T) {
 	original := embeddedTitleProbe
 	defer func() { embeddedTitleProbe = original }()
 	embeddedTitleProbe = func(context.Context, string) (string, error) {
-		return "候補タイトル", nil
+		return "ビッグマネー 浮き世の沙汰は株しだい STOCK3", nil
 	}
 
-	var calls []string
-	resolver := titleResolverFunc(func(_ context.Context, title string) (string, error) {
-		calls = append(calls, title)
-		if title == "候補タイトル" {
-			return "", fmt.Errorf("no candidate")
-		}
-		if title == "c9dqb3ybpvq80kae" {
-			return "IPX-072", nil
-		}
-		return "", fmt.Errorf("unexpected query %q", title)
-	})
-
-	got := resolveWorkWithRetry(resolver, "/tmp/a.mp4", "c9dqb3ybpvq80kae_720p", time.Second, 1, 0, func(time.Duration) {})
-	if got.Err != nil || got.CatalogID != "IPX-072" {
+	resolver := &localOnlyResolverStub{localDecision: scrape.TitleResolutionDecision{
+		Status: scrape.TitleDecisionUnknown,
+		Method: "ローカル証拠のみ",
+		Reason: "no local proof",
+	}}
+	got := resolveWorkWithRetry(resolver, "/tmp/a.mov", "0125534.Id_e0000000e936afc", time.Second, 1, 0, func(time.Duration) {})
+	if got.Status != "unknown" || got.CatalogID != "" || got.Err != nil {
 		t.Fatalf("resolution=%+v", got)
 	}
-	if len(calls) != 2 || calls[0] != "候補タイトル" || calls[1] != "c9dqb3ybpvq80kae" {
-		t.Fatalf("calls=%v", calls)
+	if len(resolver.localCalls) != 1 {
+		t.Fatalf("localCalls=%v", resolver.localCalls)
+	}
+	if len(resolver.resolveCalls) != 0 {
+		t.Fatalf("opaque fallback called general resolver/Web path: %v", resolver.resolveCalls)
+	}
+}
+
+func TestResolveWorkOpaqueWithoutEmbeddedMetadataNeverCallsResolver(t *testing.T) {
+	original := embeddedTitleProbe
+	defer func() { embeddedTitleProbe = original }()
+	embeddedTitleProbe = func(context.Context, string) (string, error) {
+		return "", nil
+	}
+
+	resolver := &localOnlyResolverStub{}
+	got := resolveWorkWithRetry(resolver, "/tmp/a.mp4", "xcobuazsdivkokyx_720p", time.Second, 1, 0, func(time.Duration) {})
+	if got.Status != "unknown" || got.Err != nil {
+		t.Fatalf("resolution=%+v", got)
+	}
+	if len(resolver.localCalls) != 0 || len(resolver.resolveCalls) != 0 {
+		t.Fatalf("opaque path unexpectedly called resolver: local=%v general=%v", resolver.localCalls, resolver.resolveCalls)
 	}
 }

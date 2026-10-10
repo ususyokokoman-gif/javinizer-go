@@ -15,7 +15,7 @@ type TitleDecisionStatus string
 
 // TitleDecisionPolicyVersion は、自動整理を許可する判定基準の版。
 // 判定条件を緩める・強める変更をした場合は必ず上げ、旧確定結果を再評価する。
-const TitleDecisionPolicyVersion = 1
+const TitleDecisionPolicyVersion = 3
 
 const (
 	TitleDecisionConfirmed TitleDecisionStatus = "confirmed"
@@ -36,7 +36,25 @@ type TitleResolutionDecision struct {
 // AutoOrganizeEligible は、ファイル名変更などの破壊的操作へ進める判定かを返す。
 // Jev のスコアや候補数ではなく「確定」のみを許可する。
 func (d TitleResolutionDecision) AutoOrganizeEligible() bool {
-	return d.Status == TitleDecisionConfirmed && strings.TrimSpace(d.CatalogID) != ""
+	if d.Status != TitleDecisionConfirmed || strings.TrimSpace(d.CatalogID) == "" {
+		return false
+	}
+	method := strings.TrimSpace(d.Method)
+	// Embedded metadata is file-specific supporting evidence. Even when it
+	// resolves to a locally exact title, it does not by itself authorize a
+	// destructive rename/move.
+	if strings.HasPrefix(method, "埋込タイトル→") {
+		return false
+	}
+	switch method {
+	case "品番とローカルDBの完全一致",
+		"品番とローカルDBの完全一致キャッシュ",
+		"品番とローカルDBの完全一致（DB同一性確認済みキャッシュ）",
+		"ローカルタイトル完全一致":
+		return true
+	default:
+		return false
+	}
 }
 
 // ResolveDecision は「疑わしきは変更せず」を強制する大量処理用の判定入口。
@@ -96,16 +114,14 @@ func (r *TitleCatalogResolver) ResolveDecision(ctx context.Context, input string
 		}, nil
 
 	case TitleInputOpaque:
-		id, err := r.scraper.lookupCatalogIDByOpaqueKey(ctx, prepared.Query)
-		if err == nil && strings.TrimSpace(id) != "" {
-			return TitleResolutionDecision{
-				Status:    TitleDecisionReview,
-				CatalogID: id,
-				Method:    "不明IDの外部逆引き",
-				Reason:    "外部検索から有力な品番候補を得ましたが、不明IDとの対応だけでは自動整理に十分な証拠ではありません。",
-			}, nil
-		}
-		return r.decisionFromResolutionError("", "不明IDの外部逆引き", err)
+		// Bulk precision-first policy: generated/download/content IDs are not
+		// human titles and are not sent to broad web search. File-specific
+		// embedded metadata is probed by the bulk caller before this point.
+		return TitleResolutionDecision{
+			Status: TitleDecisionUnknown,
+			Method: "不明ID",
+			Reason: "不明IDだけでは安全に作品を特定できないため、Webタイトル検索を行わず未特定とします。",
+		}, nil
 	}
 
 	if decision, ok, err := r.exactLocalTitleDecision(ctx, prepared.Query); err != nil {
@@ -118,6 +134,46 @@ func (r *TitleCatalogResolver) ResolveDecision(ctx context.Context, input string
 		}
 	} else if ok {
 		return decision, nil
+	}
+
+	// A similarity-index score of 1.0 is strong local evidence but is not
+	// sufficient for confirmation unless the DB-global exact-title index above
+	// proved uniqueness. If one or more exact-score candidates remain here,
+	// stop locally at review instead of spending Web calls or turning a known
+	// local ambiguity into a communication error.
+	if decision, ok, err := r.localExactScoreReviewDecision(ctx, prepared.Query); err != nil {
+		if ctx.Err() != nil {
+			return TitleResolutionDecision{Status: TitleDecisionError, Method: "ローカルタイトル照合", Reason: "ローカル作品DBの候補確認中に処理が中断されました。"}, err
+		}
+		if !errors.Is(err, models.ErrDumpMiss) && !errors.Is(err, models.ErrDumpTitleSearchUnavailable) {
+			return TitleResolutionDecision{Status: TitleDecisionError, Method: "ローカルタイトル照合", Reason: "ローカル作品DBの候補確認でエラーが発生しました。"}, err
+		}
+	} else if ok {
+		return decision, nil
+	}
+
+	// A catalog-looking token that is not in a safe leading position can still
+	// avoid an unnecessary web lookup. Exact local DB existence makes it a
+	// useful review hint, but never sufficient proof for automatic organization.
+	if candidates := extractReviewOnlyCatalogCandidates(prepared.Query); len(candidates) == 1 {
+		candidate := candidates[0]
+		verified, verifyErr := r.verifyCatalogIDInLocalDump(ctx, candidate)
+		if verifyErr != nil {
+			return TitleResolutionDecision{
+				Status:    TitleDecisionError,
+				CatalogID: candidate,
+				Method:    "品番候補＋ローカルDB存在確認",
+				Reason:    "品番候補のローカル作品DB照合でエラーが発生しました。",
+			}, verifyErr
+		}
+		if verified {
+			return TitleResolutionDecision{
+				Status:    TitleDecisionReview,
+				CatalogID: candidate,
+				Method:    "品番候補＋ローカルDB存在確認",
+				Reason:    "品番候補はローカル作品DBに実在しますが、ファイル名上の位置または境界が自動確定条件を満たさないため要確認とします。",
+			}, nil
+		}
 	}
 
 	// ここから先は検索・Jev等による補助推定。候補が得られても自動確定には昇格させない。
@@ -133,6 +189,69 @@ func (r *TitleCatalogResolver) ResolveDecision(ctx context.Context, input string
 		}, nil
 	}
 	return r.decisionFromResolutionError("", "外部検索・Jevによる補助判定", err)
+}
+
+func (r *TitleCatalogResolver) ResolveLocalOnlyDecision(ctx context.Context, input string) (TitleResolutionDecision, error) {
+	if r == nil || r.scraper == nil {
+		err := fmt.Errorf("title catalog resolver is not initialized")
+		return TitleResolutionDecision{Status: TitleDecisionError, Method: "ローカル作品判定", Reason: "作品判定機能を初期化できませんでした。"}, err
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	prepared := PrepareTitleResolutionInput(input)
+	if prepared.Query == "" {
+		return TitleResolutionDecision{Status: TitleDecisionUnknown, Method: "ローカル作品判定", Reason: "作品を特定できる文字情報がありません。"}, nil
+	}
+
+	if prepared.Kind == TitleInputCatalog {
+		ids := uniqueNormalizedCatalogIDs(extractStandaloneCatalogCandidates(prepared.Query))
+		if len(ids) != 1 {
+			return TitleResolutionDecision{Status: TitleDecisionReview, Method: "品番判定", Reason: "品番らしい文字はありますが、一意に確定できません。"}, nil
+		}
+		id := ids[0]
+		verified, err := r.verifyCatalogIDInLocalDump(ctx, id)
+		if err != nil {
+			return TitleResolutionDecision{Status: TitleDecisionError, CatalogID: id, Method: "ローカルDB照合", Reason: "品番の実在確認でエラーが発生しました。"}, err
+		}
+		if verified {
+			return TitleResolutionDecision{Status: TitleDecisionConfirmed, CatalogID: id, Method: "品番とローカルDBの完全一致", Reason: "品番がローカル作品DBに実在し、同じ品番として確認できました。"}, nil
+		}
+		return TitleResolutionDecision{Status: TitleDecisionReview, CatalogID: id, Method: "品番候補", Reason: "品番形式は明確ですが、ローカル作品DBで実在確認できません。"}, nil
+	}
+	if prepared.Kind == TitleInputOpaque {
+		return TitleResolutionDecision{Status: TitleDecisionUnknown, Method: "不明ID", Reason: "不明IDだけではローカル証拠で作品を特定できません。"}, nil
+	}
+
+	if decision, ok, err := r.exactLocalTitleDecision(ctx, prepared.Query); err != nil {
+		if !errors.Is(err, models.ErrDumpMiss) && !errors.Is(err, models.ErrDumpTitleSearchUnavailable) {
+			return TitleResolutionDecision{Status: TitleDecisionError, Method: "ローカルタイトル照合", Reason: "ローカル作品DBの照合でエラーが発生しました。"}, err
+		}
+	} else if ok {
+		return decision, nil
+	}
+	if decision, ok, err := r.localExactScoreReviewDecision(ctx, prepared.Query); err != nil {
+		if !errors.Is(err, models.ErrDumpMiss) && !errors.Is(err, models.ErrDumpTitleSearchUnavailable) {
+			return TitleResolutionDecision{Status: TitleDecisionError, Method: "ローカルタイトル照合", Reason: "ローカル作品DBの候補確認でエラーが発生しました。"}, err
+		}
+	} else if ok {
+		return decision, nil
+	}
+	if candidates := extractReviewOnlyCatalogCandidates(prepared.Query); len(candidates) == 1 {
+		candidate := candidates[0]
+		verified, err := r.verifyCatalogIDInLocalDump(ctx, candidate)
+		if err != nil {
+			return TitleResolutionDecision{Status: TitleDecisionError, CatalogID: candidate, Method: "品番候補＋ローカルDB存在確認", Reason: "品番候補のローカル作品DB照合でエラーが発生しました。"}, err
+		}
+		if verified {
+			return TitleResolutionDecision{Status: TitleDecisionReview, CatalogID: candidate, Method: "品番候補＋ローカルDB存在確認", Reason: "品番候補はローカル作品DBに実在しますが、自動確定条件を満たさないため要確認とします。"}, nil
+		}
+	}
+	return TitleResolutionDecision{
+		Status: TitleDecisionUnknown,
+		Method: "ローカル証拠のみ",
+		Reason: "ローカルDBと埋込メタデータだけでは安全に作品を特定できませんでした。Web検索は行いません。",
+	}, nil
 }
 
 func (r *TitleCatalogResolver) verifyCatalogIDInLocalDump(ctx context.Context, id string) (bool, error) {
@@ -157,33 +276,110 @@ func (r *TitleCatalogResolver) exactLocalTitleDecision(ctx context.Context, titl
 	if r.titleLookup == nil {
 		return TitleResolutionDecision{}, false, nil
 	}
-	matches, err := r.titleLookup.SearchByTitle(ctx, title, 5)
+	exactLookup, ok := r.titleLookup.(models.R18DevExactTitleLookup)
+	if !ok {
+		// Without a DB-global exact-match capability we cannot prove
+		// uniqueness, so similarity search must never auto-confirm.
+		return TitleResolutionDecision{}, false, nil
+	}
+	matches, err := exactLookup.ExactTitleMatches(ctx, title)
 	if err != nil {
 		return TitleResolutionDecision{}, false, err
 	}
 	if len(matches) == 0 {
 		return TitleResolutionDecision{}, false, nil
 	}
-	top := matches[0]
-	if strings.TrimSpace(top.DVDID) == "" || top.Score < 0.999999 {
+	byID := make(map[string]models.DumpTitleMatch, len(matches))
+	for _, match := range matches {
+		id := strings.TrimSpace(match.DVDID)
+		if id == "" {
+			continue
+		}
+		byID[strings.ToUpper(id)] = match
+	}
+	if len(byID) == 0 {
 		return TitleResolutionDecision{}, false, nil
 	}
-	if len(matches) > 1 {
-		second := matches[1]
-		if second.Score >= 0.999999 &&
-			!strings.EqualFold(strings.TrimSpace(top.DVDID), strings.TrimSpace(second.DVDID)) {
+	if len(byID) != 1 {
+		return TitleResolutionDecision{
+			Status: TitleDecisionReview,
+			Method: "ローカルタイトル照合",
+			Reason: "同じタイトルに複数の品番候補がDB全体で完全一致したため、自動整理しません。",
+		}, true, nil
+	}
+	var only models.DumpTitleMatch
+	for _, match := range byID {
+		only = match
+	}
+	// A DB-wide exact title is decisive only when the input does not contain
+	// conflicting catalog-like evidence. Mid-filename catalog tokens are never
+	// allowed to silently lose to a title match.
+	for _, candidate := range uniqueNormalizedCatalogIDs(extractStandaloneCatalogCandidates(title)) {
+		if catalogComparable(candidate) != catalogComparable(only.DVDID) {
 			return TitleResolutionDecision{
 				Status: TitleDecisionReview,
 				Method: "ローカルタイトル照合",
-				Reason: "同じタイトルに複数の品番候補が完全一致したため、自動整理しません。",
+				Reason: "タイトル完全一致候補と入力中の品番候補が一致しないため、自動整理せず要確認とします。",
 			}, true, nil
 		}
 	}
+	// Very short exact titles are too collision-prone to authorize automatic
+	// organization even when the current DB contains only one exact match.
+	// Keep the candidate for review rather than turning a weak token such as
+	// "me" into a destructive decision.
+	const minExactTitleEvidenceRunes = 12
+	meaningfulTitle := compactComparable(normalizeTitleForWebSearch(title))
+	if len([]rune(meaningfulTitle)) < minExactTitleEvidenceRunes {
+		return TitleResolutionDecision{
+			Status:    TitleDecisionReview,
+			CatalogID: strings.TrimSpace(only.DVDID),
+			Method:    "ローカルタイトル照合",
+			Reason:    "タイトルはローカル作品DB全体で一意に完全一致しますが、文字列が短く誤一致リスクが高いため自動整理せず要確認とします。",
+		}, true, nil
+	}
 	return TitleResolutionDecision{
 		Status:    TitleDecisionConfirmed,
-		CatalogID: strings.TrimSpace(top.DVDID),
+		CatalogID: strings.TrimSpace(only.DVDID),
 		Method:    "ローカルタイトル完全一致",
-		Reason:    "正規化したタイトルがローカル作品DBの一意な作品に完全一致しました。",
+		Reason:    "タイトル文字列がローカル作品DB全体で一意な作品に完全一致し、矛盾する品番候補もありません。",
+	}, true, nil
+}
+
+func (r *TitleCatalogResolver) localExactScoreReviewDecision(ctx context.Context, title string) (TitleResolutionDecision, bool, error) {
+	if r == nil || r.titleLookup == nil {
+		return TitleResolutionDecision{}, false, nil
+	}
+	matches, err := r.titleLookup.SearchByTitle(ctx, title, 5)
+	if err != nil {
+		return TitleResolutionDecision{}, false, err
+	}
+	byID := make(map[string]models.DumpTitleMatch)
+	for _, match := range matches {
+		id := strings.TrimSpace(match.DVDID)
+		if id == "" || match.Score < 0.999999 {
+			continue
+		}
+		byID[strings.ToUpper(id)] = match
+	}
+	if len(byID) == 0 {
+		return TitleResolutionDecision{}, false, nil
+	}
+	if len(byID) > 1 {
+		return TitleResolutionDecision{
+			Status: TitleDecisionReview,
+			Method: "ローカルタイトル照合",
+			Reason: "ローカル作品DBで完全一致相当の品番候補が複数あるため、Web検索で多数決せず要確認とします。",
+		}, true, nil
+	}
+	var only models.DumpTitleMatch
+	for _, match := range byID {
+		only = match
+	}
+	return TitleResolutionDecision{
+		Status:    TitleDecisionReview,
+		CatalogID: strings.TrimSpace(only.DVDID),
+		Method:    "ローカルタイトル照合",
+		Reason:    "ローカル作品DBに完全一致相当の有力候補がありますが、DB全体での一意な完全一致を証明できないため要確認とします。",
 	}, true, nil
 }
 

@@ -88,15 +88,15 @@ func TestTransientErrorsRemainRetryable(t *testing.T) {
 	}
 }
 
-func TestStateCheckpointAndTerminalCache(t *testing.T) {
+func TestConfirmedStateIsRecordedButNeverReusedAsPortableProof(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "bulk-state.json")
 	store, err := newStateStore(path, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	files := []fileItem{{Path: "movie.mp4", Size: 123, ModTimeNS: 456}}
-	task := titleWork{Kind: scrape.TitleInputTitle, Title: "作品タイトル", Indices: []int{0}}
-	if err := store.recordTask(task, files, "confirmed", "ABC-123", "ローカルタイトル完全一致", "完全一致", "", 2); err != nil {
+	files := []fileItem{{Path: "ABC-123.mp4", Size: 123, ModTimeNS: 456}}
+	task := titleWork{Kind: scrape.TitleInputCatalog, Title: "ABC-123", Indices: []int{0}}
+	if err := store.recordTask(task, files, "confirmed", "ABC-123", "品番とローカルDBの完全一致", "完全一致", "", 2); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
@@ -110,12 +110,11 @@ func TestStateCheckpointAndTerminalCache(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cached, ok := reloaded.cachedTitle(task.cacheKey())
-	if !ok {
-		t.Fatal("expected terminal cached title")
+	if _, ok := reloaded.cachedTitle(task.cacheKey()); ok {
+		t.Fatal("confirmed state must be revalidated against the current DB")
 	}
-	if cached.CatalogID != "ABC-123" || cached.Status != "confirmed" || cached.Attempts != 2 {
-		t.Fatalf("cached=%+v", cached)
+	if got := reloaded.state.Files["ABC-123.mp4"]; got.Status != "confirmed" || got.CatalogID != "ABC-123" {
+		t.Fatalf("file audit record=%+v", got)
 	}
 }
 
@@ -166,7 +165,7 @@ func TestRateLimitErrorsAreNotImmediatelyRetried(t *testing.T) {
 
 func TestStateCacheRejectsDifferentDecisionPolicyVersion(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
-	task := titleWork{Kind: scrape.TitleInputTitle, Title: "作品タイトル", Indices: []int{0}}
+	task := titleWork{Kind: scrape.TitleInputCatalog, Title: "ABC-123", Indices: []int{0}}
 	st := emptyPersistentState()
 	st.Titles[task.cacheKey()] = titleCacheRecord{
 		CatalogID:     "ABC-123",

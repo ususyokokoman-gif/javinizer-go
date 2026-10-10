@@ -105,3 +105,39 @@ func TestPrepareTitleResolutionInputDoesNotPromoteEmbeddedOpaqueCatalogSubstring
 		t.Fatalf("kind=%s query=%q; opaque substring must not become catalog", got.Kind, got.Query)
 	}
 }
+
+func TestPrecisionFirstObservedFilenameRegressions(t *testing.T) {
+	tests := []struct {
+		input    string
+		wantKind TitleInputKind
+	}{
+		{"226655.xyz XVSR-688.mp4はPikPakで共有されています.mp4", TitleInputTitle},
+		{"A-MOSAIC-ARCHIVE-hodv-21346.mp4", TitleInputOpaque},
+		{"MOSAIC-ARCHIVE-miaa-028.mp4", TitleInputOpaque},
+		{"LULU-1292人きりになった途端に.mp4", TitleInputTitle},
+		{"0136825.mp4", TitleInputOpaque},
+		{"0151922.mp4", TitleInputOpaque},
+		{"xcobuazsdivkokyx.mp4", TitleInputOpaque},
+		{"mkbwkvronwfwjsdg.mp4", TitleInputOpaque},
+		{"phkbcccr_cvucig.mp4", TitleInputOpaque},
+	}
+	for _, tt := range tests {
+		got := PrepareTitleResolutionInput(tt.input)
+		if got.Kind != tt.wantKind {
+			t.Errorf("%q kind=%s, want %s (query=%q)", tt.input, got.Kind, tt.wantKind, got.Query)
+		}
+	}
+}
+
+func TestMidFilenameCatalogTokenNeverPromotesToCatalog(t *testing.T) {
+	for _, input := range []string{
+		"226655.xyz XVSR-688.mp4はPikPakで共有されています.mp4",
+		"A-MOSAIC-ARCHIVE-hodv-21346.mp4",
+		"MOSAIC-ARCHIVE-miaa-028.mp4",
+	} {
+		got := PrepareTitleResolutionInput(input)
+		if got.Kind == TitleInputCatalog {
+			t.Fatalf("%q became catalog: %+v", input, got)
+		}
+	}
+}
