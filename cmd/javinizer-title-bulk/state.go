@@ -15,7 +15,7 @@ import (
 	"github.com/javinizer/javinizer-go/internal/scrape"
 )
 
-const bulkStateVersion = 10
+const bulkStateVersion = 11
 
 type titleResolver interface {
 	Resolve(context.Context, string) (string, error)

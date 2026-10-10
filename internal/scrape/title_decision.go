@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode"
 
 	"github.com/javinizer/javinizer-go/internal/models"
 )
@@ -15,7 +16,7 @@ type TitleDecisionStatus string
 
 // TitleDecisionPolicyVersion は、自動整理を許可する判定基準の版。
 // 判定条件を緩める・強める変更をした場合は必ず上げ、旧確定結果を再評価する。
-const TitleDecisionPolicyVersion = 3
+const TitleDecisionPolicyVersion = 4
 
 const (
 	TitleDecisionConfirmed TitleDecisionStatus = "confirmed"
@@ -104,6 +105,13 @@ func (r *TitleCatalogResolver) ResolveDecision(ctx context.Context, input string
 				CatalogID: id,
 				Method:    "品番とローカルDBの完全一致",
 				Reason:    "ファイル名の品番がローカル作品DBに実在し、同じ品番として確認できました。",
+			}, nil
+		}
+		if looksGeneratedCatalogLikeKey(id) {
+			return TitleResolutionDecision{
+				Status: TitleDecisionUnknown,
+				Method: "不明ID",
+				Reason: "品番のような形ですがローカル作品DBに存在せず、生成・配信IDの特徴が強いため品番候補として扱いません。",
 			}, nil
 		}
 		return TitleResolutionDecision{
@@ -217,6 +225,9 @@ func (r *TitleCatalogResolver) ResolveLocalOnlyDecision(ctx context.Context, inp
 		if verified {
 			return TitleResolutionDecision{Status: TitleDecisionConfirmed, CatalogID: id, Method: "品番とローカルDBの完全一致", Reason: "品番がローカル作品DBに実在し、同じ品番として確認できました。"}, nil
 		}
+		if looksGeneratedCatalogLikeKey(id) {
+			return TitleResolutionDecision{Status: TitleDecisionUnknown, Method: "不明ID", Reason: "品番のような形ですがローカル作品DBに存在せず、生成・配信IDの特徴が強いため品番候補として扱いません。"}, nil
+		}
 		return TitleResolutionDecision{Status: TitleDecisionReview, CatalogID: id, Method: "品番候補", Reason: "品番形式は明確ですが、ローカル作品DBで実在確認できません。"}, nil
 	}
 	if prepared.Kind == TitleInputOpaque {
@@ -252,6 +263,36 @@ func (r *TitleCatalogResolver) ResolveLocalOnlyDecision(ctx context.Context, inp
 		Method: "ローカル証拠のみ",
 		Reason: "ローカルDBと埋込メタデータだけでは安全に作品を特定できませんでした。Web検索は行いません。",
 	}, nil
+}
+
+func looksGeneratedCatalogLikeKey(id string) bool {
+	id = strings.ToUpper(strings.TrimSpace(id))
+	if id == "" || strings.HasPrefix(id, "FC2-PPV-") {
+		return false
+	}
+	prefix := id
+	if i := strings.IndexRune(id, '-'); i >= 0 {
+		prefix = id[:i]
+	}
+	runes := []rune(prefix)
+	if len(runes) > 8 {
+		return true
+	}
+	if len(runes) < 7 {
+		return false
+	}
+	seenLetter := false
+	for _, r := range runes {
+		switch {
+		case unicode.IsLetter(r):
+			seenLetter = true
+		case unicode.IsDigit(r):
+			if seenLetter {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (r *TitleCatalogResolver) verifyCatalogIDInLocalDump(ctx context.Context, id string) (bool, error) {

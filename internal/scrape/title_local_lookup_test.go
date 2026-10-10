@@ -481,3 +481,61 @@ func TestResolveDecisionSingleExactScoreWithoutGlobalProofStopsAtReview(t *testi
 		t.Fatalf("decision=%+v, want single-candidate review", decision)
 	}
 }
+
+func TestGeneratedCatalogLikeKeysAreRejectedOnlyAfterLocalDBMiss(t *testing.T) {
+	randomIDs := []string{
+		"27C1OIVJADU-963O",
+		"SPG0U9LUQ-77GOR",
+		"UZNDDQHVX2-31YM",
+		"KFPYGJW8TZ-74GGZ",
+		"17YNO9K5BDAB-82Q",
+		"GWUYOLZEEGC5-72E",
+		"WM3LTZTG0SN-60IP",
+	}
+	for _, id := range randomIDs {
+		if !looksGeneratedCatalogLikeKey(id) {
+			t.Errorf("%s should be treated as generated-like after DB miss", id)
+		}
+	}
+
+	legitShapes := []string{
+		"IPX-072",
+		"START-487-EC",
+		"393OTIM-615",
+		"483DAM-066",
+		"857OMG-022",
+		"CD17-005",
+		"S4LW-001",
+		"NJPDS0-116",
+		"FC2-PPV-1090559",
+	}
+	for _, id := range legitShapes {
+		if looksGeneratedCatalogLikeKey(id) {
+			t.Errorf("%s must not be rejected by shape alone", id)
+		}
+	}
+
+	for _, id := range randomIDs {
+		resolver := NewTitleCatalogResolverWithLookup(&Config{}, &richFakeTitleLookup{})
+		decision, err := resolver.ResolveDecision(context.Background(), id)
+		if err != nil {
+			t.Fatalf("%s: %v", id, err)
+		}
+		if decision.Status != TitleDecisionUnknown || decision.CatalogID != "" || decision.AutoOrganizeEligible() {
+			t.Fatalf("%s decision=%+v, want unknown without candidate", id, decision)
+		}
+	}
+
+	// Even an unusual shape must remain confirmable when the local DB proves
+	// exact existence. Shape heuristics never override direct DB evidence.
+	resolver := NewTitleCatalogResolverWithLookup(&Config{}, &richFakeTitleLookup{
+		movie: &models.DumpMovie{DVDID: "CD17-005"},
+	})
+	decision, err := resolver.ResolveDecision(context.Background(), "CD17-005")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Status != TitleDecisionConfirmed || decision.CatalogID != "CD17-005" {
+		t.Fatalf("DB-proven catalog was rejected: %+v", decision)
+	}
+}
