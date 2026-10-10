@@ -59,3 +59,21 @@ func TestBulkStateV10IsDiscarded(t *testing.T) {
 		t.Fatalf("v10 state survived classifier upgrade: files=%d titles=%d", len(store.state.Files), len(store.state.Titles))
 	}
 }
+
+func TestBulkStateV11IsDiscarded(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	raw := []byte("{\"version\":11,\"files\":{\"caption.mp4\":{\"status\":\"review\",\"catalog_id\":\"DASS-931\",\"decision_policy_version\":4}},\"titles\":{\"title\\u0000caption\":{\"status\":\"review\",\"catalog_id\":\"DASS-931\",\"decision_policy_version\":4}}}")
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := newStateStore(path, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.state.Version != bulkStateVersion {
+		t.Fatalf("version=%d, want %d", store.state.Version, bulkStateVersion)
+	}
+	if len(store.state.Files) != 0 || len(store.state.Titles) != 0 {
+		t.Fatalf("v11 state survived external-search policy upgrade: files=%d titles=%d", len(store.state.Files), len(store.state.Titles))
+	}
+}

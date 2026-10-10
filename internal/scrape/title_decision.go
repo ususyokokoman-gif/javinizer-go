@@ -16,7 +16,7 @@ type TitleDecisionStatus string
 
 // TitleDecisionPolicyVersion は、自動整理を許可する判定基準の版。
 // 判定条件を緩める・強める変更をした場合は必ず上げ、旧確定結果を再評価する。
-const TitleDecisionPolicyVersion = 4
+const TitleDecisionPolicyVersion = 5
 
 const (
 	TitleDecisionConfirmed TitleDecisionStatus = "confirmed"
@@ -160,33 +160,63 @@ func (r *TitleCatalogResolver) ResolveDecision(ctx context.Context, input string
 		return decision, nil
 	}
 
-	// A catalog-looking token that is not in a safe leading position can still
-	// avoid an unnecessary web lookup. Exact local DB existence makes it a
-	// useful review hint, but never sufficient proof for automatic organization.
-	if candidates := extractReviewOnlyCatalogCandidates(prepared.Query); len(candidates) == 1 {
-		candidate := candidates[0]
-		verified, verifyErr := r.verifyCatalogIDInLocalDump(ctx, candidate)
-		if verifyErr != nil {
-			return TitleResolutionDecision{
-				Status:    TitleDecisionError,
-				CatalogID: candidate,
-				Method:    "品番候補＋ローカルDB存在確認",
-				Reason:    "品番候補のローカル作品DB照合でエラーが発生しました。",
-			}, verifyErr
-		}
-		if verified {
-			return TitleResolutionDecision{
-				Status:    TitleDecisionReview,
-				CatalogID: candidate,
-				Method:    "品番候補＋ローカルDB存在確認",
-				Reason:    "品番候補はローカル作品DBに実在しますが、ファイル名上の位置または境界が自動確定条件を満たさないため要確認とします。",
-			}, nil
-		}
+	// Catalog-looking tokens outside the safe confirmation boundary are review
+	// evidence only. Verify every raw hint and keep only locally proven IDs.
+	// This prevents junk tokens (for example hhd800) from hiding a real
+	// AGMX-162 elsewhere in the same filename.
+	verifiedHints, verifyErr := r.verifiedReviewCatalogHints(ctx, prepared.Query)
+	if verifyErr != nil {
+		return TitleResolutionDecision{
+			Status: TitleDecisionError,
+			Method: "品番候補＋ローカルDB存在確認",
+			Reason: "品番候補のローカル作品DB照合でエラーが発生しました。",
+		}, verifyErr
+	}
+	if len(verifiedHints) == 1 {
+		return TitleResolutionDecision{
+			Status:    TitleDecisionReview,
+			CatalogID: verifiedHints[0],
+			Method:    "品番候補＋ローカルDB存在確認",
+			Reason:    "品番候補はローカル作品DBに実在しますが、ファイル名上の位置または境界が自動確定条件を満たさないため要確認とします。",
+		}, nil
+	}
+	if len(verifiedHints) > 1 {
+		return TitleResolutionDecision{
+			Status: TitleDecisionReview,
+			Method: "品番候補＋ローカルDB存在確認",
+			Reason: "ファイル名中にローカル作品DBで実在確認できる品番候補が複数あるため、自動整理せず要確認とします。",
+		}, nil
+	}
+
+	// A leading catalog-shaped token glued directly to Japanese title text has
+	// an unsafe boundary. LULU-1292人... demonstrates why the final digit may
+	// actually belong to the title. Do not Web-vote this ambiguity into a
+	// candidate; stop at review without exposing an unverified catalog ID.
+	if glued := extractGluedLeadingCatalogCandidate(prepared.Query); glued != "" {
+		return TitleResolutionDecision{
+			Status: TitleDecisionReview,
+			Method: "先頭品番境界要確認",
+			Reason: fmt.Sprintf("先頭に品番らしい文字列 %s がありますが、直後にタイトル文字が連結して境界を安全に確定できないため要確認とします。", glued),
+		}, nil
+	}
+
+	// Public Web is a last-resort review aid, not a generic text search engine.
+	// Require local title-index evidence first and reject obvious downloader /
+	// platform/social-source text. This prevents random IDs and captions from
+	// exhausting providers while preserving a path for strong local near-matches.
+	allowed, gateErr := r.externalTitleSearchAllowed(ctx, prepared.Query)
+	if gateErr != nil {
+		return TitleResolutionDecision{Status: TitleDecisionError, Method: "ローカルタイトル事前判定", Reason: "Web検索前のローカル根拠確認でエラーが発生しました。"}, gateErr
+	}
+	if !allowed {
+		return TitleResolutionDecision{
+			Status: TitleDecisionUnknown,
+			Method: "ローカル証拠不足",
+			Reason: "ローカル作品DBに十分強いタイトル根拠がないため、一般Web検索を行わず未特定とします。",
+		}, nil
 	}
 
 	// ここから先は検索・Jev等による補助推定。候補が得られても自動確定には昇格させない。
-	// まず「誤リネームしない」を優先し、Web自動確定の昇格条件は実データの正解集合で
-	// 十分に検証できたものだけ将来追加する。
 	id, err := r.Resolve(ctx, prepared.Query)
 	if err == nil && strings.TrimSpace(id) != "" {
 		return TitleResolutionDecision{
@@ -248,21 +278,117 @@ func (r *TitleCatalogResolver) ResolveLocalOnlyDecision(ctx context.Context, inp
 	} else if ok {
 		return decision, nil
 	}
-	if candidates := extractReviewOnlyCatalogCandidates(prepared.Query); len(candidates) == 1 {
-		candidate := candidates[0]
-		verified, err := r.verifyCatalogIDInLocalDump(ctx, candidate)
-		if err != nil {
-			return TitleResolutionDecision{Status: TitleDecisionError, CatalogID: candidate, Method: "品番候補＋ローカルDB存在確認", Reason: "品番候補のローカル作品DB照合でエラーが発生しました。"}, err
-		}
-		if verified {
-			return TitleResolutionDecision{Status: TitleDecisionReview, CatalogID: candidate, Method: "品番候補＋ローカルDB存在確認", Reason: "品番候補はローカル作品DBに実在しますが、自動確定条件を満たさないため要確認とします。"}, nil
-		}
+	verifiedHints, err := r.verifiedReviewCatalogHints(ctx, prepared.Query)
+	if err != nil {
+		return TitleResolutionDecision{Status: TitleDecisionError, Method: "品番候補＋ローカルDB存在確認", Reason: "品番候補のローカル作品DB照合でエラーが発生しました。"}, err
+	}
+	if len(verifiedHints) == 1 {
+		return TitleResolutionDecision{Status: TitleDecisionReview, CatalogID: verifiedHints[0], Method: "品番候補＋ローカルDB存在確認", Reason: "品番候補はローカル作品DBに実在しますが、自動確定条件を満たさないため要確認とします。"}, nil
+	}
+	if len(verifiedHints) > 1 {
+		return TitleResolutionDecision{Status: TitleDecisionReview, Method: "品番候補＋ローカルDB存在確認", Reason: "ローカル作品DBで実在確認できる品番候補が複数あるため要確認とします。"}, nil
+	}
+	if glued := extractGluedLeadingCatalogCandidate(prepared.Query); glued != "" {
+		return TitleResolutionDecision{Status: TitleDecisionReview, Method: "先頭品番境界要確認", Reason: fmt.Sprintf("先頭に品番らしい文字列 %s がありますが、境界を安全に確定できないため要確認とします。", glued)}, nil
 	}
 	return TitleResolutionDecision{
 		Status: TitleDecisionUnknown,
 		Method: "ローカル証拠のみ",
 		Reason: "ローカルDBと埋込メタデータだけでは安全に作品を特定できませんでした。Web検索は行いません。",
 	}, nil
+}
+
+func (r *TitleCatalogResolver) verifiedReviewCatalogHints(ctx context.Context, query string) ([]string, error) {
+	candidates := extractReviewOnlyCatalogCandidates(query)
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+	verified := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		ok, err := r.verifyCatalogIDInLocalDump(ctx, candidate)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			verified = append(verified, candidate)
+		}
+	}
+	return uniqueNormalizedCatalogIDs(verified), nil
+}
+
+func (r *TitleCatalogResolver) externalTitleSearchAllowed(ctx context.Context, title string) (bool, error) {
+	if lowValueExternalTitleQuery(title) {
+		return false, nil
+	}
+	if r == nil || r.titleLookup == nil {
+		return false, nil
+	}
+	matches, err := r.titleLookup.SearchByTitle(ctx, title, 5)
+	if err != nil {
+		if errors.Is(err, models.ErrDumpMiss) || errors.Is(err, models.ErrDumpTitleSearchUnavailable) {
+			return false, nil
+		}
+		return false, err
+	}
+	if len(matches) == 0 || strings.TrimSpace(matches[0].DVDID) == "" || matches[0].Score < 0.72 {
+		return false, nil
+	}
+	if len(matches) > 1 && matches[0].Score < 0.999999 &&
+		matches[0].Score-matches[1].Score < 0.025 {
+		return false, nil
+	}
+	return true, nil
+}
+
+func lowValueExternalTitleQuery(title string) bool {
+	s := strings.TrimSpace(strings.ToLower(title))
+	if s == "" {
+		return true
+	}
+	for _, marker := range []string{
+		"pornhub", "fantia", "earnvids", "pikpak",
+		"写メ日記", "ついったー", "ファンクラブ",
+	} {
+		if strings.Contains(s, marker) {
+			return true
+		}
+	}
+	if strings.Contains(s, ".com") || strings.ContainsRune(s, '@') ||
+		strings.HasPrefix(s, "unknown-") {
+		return true
+	}
+	// Long numeric source IDs are downloader/account identifiers, not useful
+	// human-readable title evidence.
+	digitRun := 0
+	for _, r := range s {
+		if unicode.IsDigit(r) {
+			digitRun++
+			if digitRun >= 10 {
+				return true
+			}
+		} else {
+			digitRun = 0
+		}
+	}
+	// A single ASCII machine token is not worth public title search. Real
+	// catalog IDs have already taken the catalog path before this function.
+	asciiOnly := true
+	hasSpace := false
+	for _, r := range s {
+		if r > unicode.MaxASCII {
+			asciiOnly = false
+			break
+		}
+		if unicode.IsSpace(r) {
+			hasSpace = true
+		}
+	}
+	if asciiOnly && !hasSpace {
+		if len([]rune(s)) >= 6 {
+			return true
+		}
+	}
+	return false
 }
 
 func looksGeneratedCatalogLikeKey(id string) bool {

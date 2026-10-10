@@ -115,6 +115,31 @@ func extractLeadingFilenameCatalogCandidate(s string) string {
 	return id
 }
 
+func extractGluedLeadingCatalogCandidate(s string) string {
+	s = strings.TrimSpace(norm.NFKC.String(s))
+	if s == "" {
+		return ""
+	}
+	loc := webCatalogCandidateRE.FindStringIndex(s)
+	if len(loc) != 2 || loc[0] != 0 || loc[1] >= len(s) {
+		return ""
+	}
+	r, _ := utf8.DecodeRuneInString(s[loc[1]:])
+	// Only treat a non-separated leading token as a boundary ambiguity when
+	// human-readable Japanese text begins immediately after it. This catches
+	// real corpus forms such as DASS-931神対応... while avoiding generated
+	// numeric keys such as unknown-192602540083...
+	if !(unicode.Is(unicode.Han, r) || unicode.Is(unicode.Hiragana, r) ||
+		unicode.Is(unicode.Katakana, r) || strings.ContainsRune("「『【（", r)) {
+		return ""
+	}
+	id := normalizeWebCatalogCandidate(s[loc[0]:loc[1]])
+	if id == "" || catalogCandidateHasUnsafeAttachedSuffix(id) {
+		return ""
+	}
+	return id
+}
+
 func catalogCandidateHasUnsafeAttachedSuffix(id string) bool {
 	// A long alphabetic tail glued directly to the numeric portion is much
 	// more likely to be an opaque release key than a catalog edition suffix.
