@@ -145,6 +145,9 @@ func (c *jobController) StartScrape(ctx context.Context, files []string, cfg Scr
 // Returns an error if the job cannot start (e.g., missing workflow dependency).
 // Per DEEP-6: reads WF and BatchCfg from job.deps directly — no per-call overrides.
 func (c *jobController) StartApply(ctx context.Context, cfg ApplyPhaseConfig) error {
+	if err := precisionPreviewApplyGuard(); err != nil {
+		return err
+	}
 	wf := c.resolveWF()
 	batchCfg := c.resolveBatchCfg()
 
