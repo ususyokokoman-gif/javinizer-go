@@ -16,6 +16,7 @@ func RegisterRoutes(protected *gin.RouterGroup, rt *core.APIRuntime) {
 	batch := protected.Group("/batch", middleware.ValidateJobID())
 	{
 		batch.GET("/:id", getBatchJob(rt))
+		batch.GET("/:id/precision-fallback-preview", previewPrecisionFallback(rt))
 		batch.DELETE("/:id", deleteBatchJob(rt))
 		batch.POST("/:id/cancel", cancelBatchJob(rt))
 		batch.PATCH("/:id/results/:resultId", updateBatchMovie(rt))
