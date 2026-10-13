@@ -1,55 +1,65 @@
-# Precision-first next stage (isolated)
+# JAVINIZER Precision-first：次工程の独立実装
 
-This add-only Go package was developed on MINIPC because the Mac workstation
-hosting the newer local JAVINIZER commit was offline. It does **not** replace,
-rename, move, or overwrite any user video or any Javinizer job.
+このモジュールは、Macの最新リポジトリに接続できない間も開発を止めないため、
+miniPC上でGitHubの `main` を別ディレクトリに複製し、
+**追加ファイルのみ**で実装したものです。
 
-## What is implemented
+**動画ファイル・作品DB・既存ジョブは変更しません。**
 
-- `Build`: read-only, deterministic selection of **confirmed-only**
-  organization candidates, holding any missing, outdated, contradictory,
-  English-only, failed, excluded, or unverified records.
-- Supplemental detection for **completed-but-no-Japanese-original** and
-  **upstream-failed** files, without assuming the completion state is confirmation.
-- `Queries`: deduped lookup stages by intact SKU (including edition suffix),
-  retaining every originating file path. Opaque IDs are skipped.
-- `SearchCandidates`: read-only provider interface, per-call timeout,
-  global request limit, and per-provider circuit breakers for 429 and regional
-  blocking. It always returns candidates as **review**, never confirmed.
+## 実装した機能
 
-The state `Verified` is only valid when produced by a trusted *server-side*
-current-policy decision. Do not accept this field from an API request or
-external scraped response.
+1. **確定作品だけの変更予定一覧の抽出**
+   - 現行判定ポリシーの完全一致
+   - サーバー側で検証された同定根拠
+   - 作品ID・品番・日本語原題の整合
+   - 英語タイトル、未確認、旧判定キャッシュ、品番違いは除外
+   - 一覧は読み取り専用で、ファイル変更を許可するAPIではありません
 
-## Integration into latest Mac repository
+2. **追加検索対象の選別**
+   - 通常検索成功でも日本語原題がない作品
+   - 通常検索で失敗したが明確な品番を持つ作品
+   - 形式不明ID・連番は検索対象にしません
 
-Source baseline: GitHub `ususyokokoman-gif/javinizer-go` main
-(`58f4510` at development time).
-Latest Mac local tree as last verified: branch `local/desktop-noauth`,
-commit `8424b9b`, including independent `internal/decision`,
-`worker.AuditJobIdentity`, and the shared `StartApply` safety gate.
+3. **品番単位での重複検索防止**
+   - 同一品番へのWeb照会は集約
+   - 対象の各ファイルパスは個別に保持
+   - `START-487-EC` と `START-487` などを統合しません
 
-When Mac access resumes:
+4. **情報源ごとの安全な追加検索**
+   - ローカルDB → 選択したスクレイパー → 公式掲載ページ
+   - 429・地域制限を検出した情報源は同じ処理中に再照会しません
+   - Web照会数と処理時間の上限
+   - 取得結果は常に「要確認」の候補であり、自動確定しません
 
-1. Inspect actual repository branch, HEAD, status and rules. Preserve the
-   existing unrelated dirty auth changes.
-2. Cherry-pick or copy this **add-only** package; run its tests.
-3. **On the server**, convert the freshly computed
-   `worker.AuditJobIdentity` output into `precisionplan.Verdict`.
-   Populate `Verified=true` only for items confirmed by a current-policy
-   authoritative decision, never from a client.
-4. Build the planner's `File` records from the real job snapshot, keyed
-   by each exact file path, not a movie ID lookup that picks a first file.
-5. Expose only read-only report and query-plan endpoints, initially.
-6. Connect LibreDMM/other selected official scraper adapters via
-   `SearchCandidates`; enforce provider-level rate limits in the adapter.
-   Search results stay **review** until rechecked against authoritative data.
-7. Keep the existing shared worker apply gate mandatory. Never turn a
-   `Ready` list directly into a rename without final preflight, collision
-   detection, change history, and rollback support.
-8. Validate on the 498-file persisted batch using a temporary read-only
-   copy of SQLite, then repeat on 5,000–7,000 file Shadow Runs.
-   Required goals: zero false confirmations and zero file modifications.
+## 現在の検証範囲
 
-This isolated work is unit-tested, but NOT yet integrated or E2E tested
-against the newer Mac-local build.
+- Go単体テスト・静的検査：合格
+- 合成7,000件テスト：合格
+- miniPCのIntel N100で、合成7,000件の選別処理平均約23ms（ベンチマーク3回）
+- **Mac側の最新判定エンジンとの接続は未完了**
+- **実動画5,000～7,000本のShadow Runは未実施**
+
+## Mac側の最新実装に統合するとき
+
+前回確認されたMacのローカルリポジトリは
+`local/desktop-noauth` / `8424b9b` です。
+**復旧時は必ずブランチ・HEAD・git statusを再確認してください。**
+
+1. Mac側に存在する独立判定 `internal/decision` と
+   `worker.AuditJobIdentity` を正本として扱います。
+2. この追加専用モジュールを取り込みます。
+3. **サーバー内部**で生成した判定結果だけを
+   `precisionplan.Verdict` へ変換します。
+   `Verified=true` をAPI入力やスクレイパー応答から受け取ってはいけません。
+4. 結果は映画IDだけでなく**元ファイルパス**をキーにして処理します。
+5. まず読み取り専用の候補・変更予定APIのみ公開します。
+6. LibreDMMなどを `SearchCandidates` に接続する場合も、
+   取得結果は別の決定的証拠で照合するまで要確認です。
+7. 既存の共通 `StartApply` 安全ゲートを取り外しません。
+   ファイル変更は将来、変更計画・衝突確認・変更履歴・rollbackが
+   整備された後にのみ許可します。
+8. 498件の隔離DB検証、続いて5,000～7,000本のShadow Runを実施します。
+
+この作業ブランチをGitHubの `main` へ直接マージすると、
+Mac側の未公開コミットとの差異が残ります。
+**Macローカルの最新実装を確認した上で取り込んでください。**
