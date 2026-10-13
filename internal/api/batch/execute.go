@@ -32,6 +32,10 @@ func prepareAndLaunchApply(
 	applyOpts worker.ApplyPhaseConfig,
 	successMessage string,
 ) {
+	if worker.IsPrecisionPreviewBuild() {
+		c.AbortWithStatusJSON(http.StatusConflict, contracts.ErrorResponse{Error: "Precision preview: organizing and updating files is disabled", Code: "PREVIEW_APPLY_DISABLED"})
+		return
+	}
 	wf, wfErr := snap.BatchWorkflow(job.GetID())
 	if wfErr != nil {
 		c.JSON(http.StatusInternalServerError, contracts.ErrorResponse{Error: fmt.Sprintf("Failed to create workflow: %v", wfErr)})
@@ -82,6 +86,10 @@ func prepareAndLaunchApply(
 // @Router /api/v1/batch/{id}/organize [post]
 func organizeJob(rt *core.APIRuntime) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if worker.IsPrecisionPreviewBuild() {
+			c.AbortWithStatusJSON(http.StatusConflict, contracts.ErrorResponse{Error: "Precision preview: organizing and updating files is disabled", Code: "PREVIEW_APPLY_DISABLED"})
+			return
+		}
 		var req contracts.OrganizeRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			c.JSON(http.StatusBadRequest, contracts.ErrorResponse{Error: err.Error()})
@@ -136,6 +144,10 @@ func organizeJob(rt *core.APIRuntime) gin.HandlerFunc {
 // @Router /api/v1/batch/{id}/update [post]
 func updateBatchJob(rt *core.APIRuntime) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if worker.IsPrecisionPreviewBuild() {
+			c.AbortWithStatusJSON(http.StatusConflict, contracts.ErrorResponse{Error: "Precision preview: organizing and updating files is disabled", Code: "PREVIEW_APPLY_DISABLED"})
+			return
+		}
 		deps := rt.Deps()
 		jobID := c.Param("id")
 

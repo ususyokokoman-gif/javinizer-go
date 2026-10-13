@@ -117,6 +117,10 @@ func emitRevertEvent(ctx context.Context, emitter eventlog.EventEmitter, message
 // @Router /api/v1/jobs/{id}/revert [post]
 func revertBatch(deps JobDeps) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if worker.IsPrecisionPreviewBuild() {
+			c.AbortWithStatusJSON(http.StatusConflict, contracts.ErrorResponse{Error: "Precision preview: reverting or moving files is disabled", Code: "PREVIEW_REVERT_DISABLED"})
+			return
+		}
 		jobID := c.Param("id")
 
 		// Guard: revert must be explicitly enabled in config
@@ -199,6 +203,10 @@ func revertBatch(deps JobDeps) gin.HandlerFunc {
 // @Router /api/v1/jobs/{id}/operations/{movieId}/revert [post]
 func revertOperation(deps JobDeps) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if worker.IsPrecisionPreviewBuild() {
+			c.AbortWithStatusJSON(http.StatusConflict, contracts.ErrorResponse{Error: "Precision preview: reverting or moving files is disabled", Code: "PREVIEW_REVERT_DISABLED"})
+			return
+		}
 		jobID := c.Param("id")
 		movieID := c.Param("movieId")
 

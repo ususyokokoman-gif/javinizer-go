@@ -13,6 +13,7 @@ import (
 	historypkg "github.com/javinizer/javinizer-go/internal/history"
 	"github.com/javinizer/javinizer-go/internal/logging"
 	"github.com/javinizer/javinizer-go/internal/models"
+	"github.com/javinizer/javinizer-go/internal/worker"
 	"github.com/spf13/afero"
 	"github.com/spf13/cobra"
 )
@@ -121,6 +122,9 @@ func NewRevertCommand() *cobra.Command {
 }
 
 func runHistoryRevert(cmd *cobra.Command, args []string, configFile string) error {
+	if worker.IsPrecisionPreviewBuild() {
+		return fmt.Errorf("PRECISION_PREVIEW_READ_ONLY: history revert is disabled in Windows preview")
+	}
 	batchID := args[0]
 
 	// Parse --scrape-ids flag if present
