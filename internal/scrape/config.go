@@ -130,7 +130,7 @@ func normalizeKeepWordKey(word string) string {
 // cfg.Metadata.ActressDatabase.Enabled, cfg.Scrapers.ScrapeActress,
 // cfg.Scrapers.UserAgent, cfg.Scrapers.Referer, cfg.System.TempDir,
 // cfg.Output.Template.FileFormat, cfg.Output.Template.FolderFormat,
-// cfg.Output.Template.SubfolderFormat (read via cfg.Output as one sub-config).
+// cfg.Output.Template.SubfolderFormat (passed to the helper as a sub-config).
 func ConfigFromAppConfig(cfg *config.Config) *Config {
 	if cfg == nil {
 		return nil
