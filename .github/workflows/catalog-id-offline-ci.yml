@@ -38,9 +38,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for patch in keepwords.patch title-search.patch title-web-search.patch worker-web-first.patch; do
-            git apply --check ".github/patches/$patch"
-            git apply ".github/patches/$patch"
+          git apply --check .github/patches/keepwords.patch
+          git apply .github/patches/keepwords.patch
+          for patch in title-search.patch title-web-search.patch worker-web-first.patch; do
+            git apply --recount --check ".github/patches/$patch"
+            git apply --recount ".github/patches/$patch"
           done
           git diff --check
       - name: Verify Go format for changed code
