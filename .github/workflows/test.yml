@@ -62,8 +62,22 @@ jobs:
     - name: Check coverage threshold
       run: ./scripts/check_coverage.sh 75 coverage.out
 
-    - name: Upload coverage to Codecov
+    - name: Check if Codecov upload is configured
+      id: codecov_token
       if: steps.detect.outputs.running_in_act != 'true'
+      env:
+        CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+      shell: bash
+      run: |
+        if [ -n "$CODECOV_TOKEN" ]; then
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "Codecov upload unavailable: no CODECOV_TOKEN; internal 75% coverage gate remains mandatory"
+          echo "enabled=false" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Upload coverage to Codecov
+      if: steps.detect.outputs.running_in_act != 'true' && steps.codecov_token.outputs.enabled == 'true'
       uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7
       with:
         files: ./coverage.out
@@ -128,6 +142,21 @@ jobs:
       with:
         go-version-file: ${{ env.GO_VERSION_FILE }}
         cache: true
+
+    # Match the release pipeline: the KEEPWORDS and web-first hooks are shipped
+    # as four source patches rather than committed changes to upstream files.
+    # Linting an unpatched tree incorrectly reports these compiled paths unused.
+    - name: Apply production source patches for lint
+      shell: bash
+      run: |
+        set -euo pipefail
+        git apply --check .github/patches/keepwords.patch
+        git apply .github/patches/keepwords.patch
+        for patch in title-search.patch title-web-search.patch worker-web-first.patch; do
+          git apply --recount --check ".github/patches/$patch"
+          git apply --recount ".github/patches/$patch"
+        done
+        git diff --check
 
     - name: Run go vet
       run: make vet
