@@ -20,8 +20,9 @@ type keepWordRange struct {
 // a separate non-overlapping position, it is still preserved once.
 //
 // Syntax:
-//   <KEEPWORDS:word1|word2|word3>
-//   <KEEPWORDS:word1|word2;PREFIX= - ;DELIM= ;SUFFIX=>
+//
+//	<KEEPWORDS:word1|word2|word3>
+//	<KEEPWORDS:word1|word2;PREFIX= - ;DELIM= ;SUFFIX=>
 //
 // PREFIX and SUFFIX are emitted only when at least one configured word matches.
 func resolveKeepWordsTag(modifier string, ctx *Context) string {
