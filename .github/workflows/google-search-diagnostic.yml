@@ -1,0 +1,91 @@
+name: Google Search HTML Diagnostic
+
+on:
+  push:
+    branches: [feature/keepwords]
+    paths:
+      - '.github/workflows/google-search-diagnostic.yml'
+  workflow_dispatch:
+
+jobs:
+  diagnose:
+    runs-on: windows-latest
+    steps:
+      - name: Verify rendered Google search with Edge
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $title = '一ヶ月間の禁欲の果てに彼女のルームメイト2人と浮気SEXだけに没頭した彼女不在の3日間'
+          $q = [Uri]::EscapeDataString($title)
+          $url = "https://www.google.com/search?hl=ja&num=10&filter=0&pws=0&safe=off&q=$q"
+
+          $edgeCandidates = @(@(
+            (Join-Path ${env:ProgramFiles(x86)} 'Microsoft\Edge\Application\msedge.exe'),
+            (Join-Path $env:ProgramFiles 'Microsoft\Edge\Application\msedge.exe')
+          ) | Where-Object { $_ -and (Test-Path $_) })
+          if ($edgeCandidates.Count -lt 1) { throw 'Microsoft Edge executable not found' }
+          $edge = [string]$edgeCandidates[0]
+          "edge_path=$edge"
+          & $edge --version
+
+          $profile = Join-Path $env:RUNNER_TEMP 'javinizer-google-edge-profile'
+          New-Item -ItemType Directory -Path $profile -Force | Out-Null
+          $stdout = Join-Path $env:RUNNER_TEMP 'google-edge-dom.html'
+          $stderr = Join-Path $env:RUNNER_TEMP 'google-edge-stderr.txt'
+
+          $args = @(
+            '--headless=new',
+            '--disable-gpu',
+            '--no-first-run',
+            '--disable-default-apps',
+            '--disable-extensions',
+            '--disable-background-networking',
+            '--disable-sync',
+            "--user-data-dir=$profile",
+            '--virtual-time-budget=8000',
+            '--dump-dom',
+            $url
+          )
+          $p = Start-Process -FilePath $edge -ArgumentList $args -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+          "edge_exit_code=$($p.ExitCode)"
+          if ($p.ExitCode -ne 0) {
+            Get-Content $stderr -ErrorAction SilentlyContinue
+            throw "Edge headless failed with $($p.ExitCode)"
+          }
+
+          $html = Get-Content $stdout -Raw -Encoding UTF8
+          "body_bytes=$((Get-Item $stdout).Length)"
+          "contains_expected_id=$($html.IndexOf('SSIS-001',[StringComparison]::OrdinalIgnoreCase) -ge 0)"
+          "contains_expected_compact=$($html.IndexOf('SSIS001',[StringComparison]::OrdinalIgnoreCase) -ge 0)"
+          "contains_query_title=$($html.Contains($title))"
+          "h3_count=$(([regex]::Matches($html, '<h3\b', 'IgnoreCase')).Count)"
+          "dmm_count=$(([regex]::Matches($html, 'dmm', 'IgnoreCase')).Count)"
+          "fanza_count=$(([regex]::Matches($html, 'fanza', 'IgnoreCase')).Count)"
+          "r18_count=$(([regex]::Matches($html, 'r18\.dev', 'IgnoreCase')).Count)"
+          "javdb_count=$(([regex]::Matches($html, 'javdb', 'IgnoreCase')).Count)"
+          "captcha_marker=$($html -match '(?i)(unusual traffic|not a robot|異常なトラフィック|recaptcha)')"
+
+          $tm = [regex]::Match($html, '<title[^>]*>(.*?)</title>', 'IgnoreCase,Singleline')
+          if ($tm.Success) {
+            "document_title=$([System.Net.WebUtility]::HtmlDecode(($tm.Groups[1].Value -replace '\s+', ' ')).Trim())"
+          }
+
+          foreach ($needle in @('SSIS-001','SSIS001','dmm.co.jp','fanza','r18.dev','javdb')) {
+            $idx = $html.IndexOf($needle, [StringComparison]::OrdinalIgnoreCase)
+            if ($idx -ge 0) {
+              $start = [Math]::Max(0, $idx - 300)
+              $len = [Math]::Min(900, $html.Length - $start)
+              $snippet = $html.Substring($start, $len) -replace '\s+', ' '
+              "CONTEXT[$needle]=$snippet"
+            }
+          }
+
+          if ($html.IndexOf('SSIS-001',[StringComparison]::OrdinalIgnoreCase) -lt 0 -and $html.IndexOf('SSIS001',[StringComparison]::OrdinalIgnoreCase) -lt 0) {
+            $plain = [regex]::Replace($html, '<script\b[^>]*>.*?</script>', ' ', 'IgnoreCase,Singleline')
+            $plain = [regex]::Replace($plain, '<style\b[^>]*>.*?</style>', ' ', 'IgnoreCase,Singleline')
+            $plain = [regex]::Replace($plain, '<[^>]+>', ' ')
+            $plain = [System.Net.WebUtility]::HtmlDecode(($plain -replace '\s+', ' ')).Trim()
+            if ($plain.Length -gt 1200) { $plain = $plain.Substring(0,1200) }
+            "visible_prefix=$plain"
+            throw 'Rendered Google DOM did not contain expected catalog ID'
+          }

@@ -117,8 +117,8 @@
 //	cfg.Output.Download                            → api/core
 //	cfg.Output.Download.DownloadProxy              → api/core
 //	cfg.Output.MediaFormat.FanartFormat                 → downloader, organizer
-//	cfg.Output.Template.FileFormat                   → organizer
-//	cfg.Output.Template.FolderFormat                 → organizer
+//	cfg.Output.Template.FileFormat                   → organizer, scrape
+//	cfg.Output.Template.FolderFormat                 → organizer, scrape
 //	cfg.Output.GetOperationMode()           → api/core, organizer
 //	cfg.Output.Operation.GroupActress                 → downloader, nfo, organizer, workflow
 //	cfg.Output.Operation.GroupActressMin              → downloader, nfo, organizer, workflow
@@ -134,7 +134,7 @@
 //	cfg.Output.MediaFormat.ScreenshotFolder             → downloader, organizer
 //	cfg.Output.MediaFormat.ScreenshotFormat             → downloader, organizer
 //	cfg.Output.MediaFormat.ScreenshotPadding            → downloader, organizer
-//	cfg.Output.Template.SubfolderFormat              → organizer
+//	cfg.Output.Template.SubfolderFormat              → organizer, scrape
 //	cfg.Output.Operation.SubtitleExtensions           → organizer
 //	cfg.Output.MediaFormat.TrailerFormat                → downloader, organizer
 //	cfg.Performance.MaxWorkers              → api/core

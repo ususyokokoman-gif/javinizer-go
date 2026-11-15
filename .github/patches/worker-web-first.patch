@@ -1,0 +1,31 @@
+diff --git a/internal/worker/scrape_phase.go b/internal/worker/scrape_phase.go
+--- a/internal/worker/scrape_phase.go
++++ b/internal/worker/scrape_phase.go
+@@ -174,18 +174,16 @@ func buildScrapeCmd(
+ 			movieID = fmi.MovieID
+ 			movieIDFromMatcher = true
+ 		} else {
+-			movieID = ""
+-			if inputs.Matcher != nil {
+-				movieID = inputs.Matcher.MatchString(filepath.Base(filePath))
+-			}
+-			if movieID == "" {
+-				movieID = filepath.Base(filePath)
+-				ext := filepath.Ext(movieID)
+-				if ext != "" {
+-					movieID = movieID[:len(movieID)-len(ext)]
+-				}
+-			} else {
+-				movieIDFromMatcher = true
++			// The scan/match phase already had the chance to establish a validated
++			// catalog ID in fmi.MovieID. When it did not, preserve the complete
++			// extension-stripped filename as title input for the scrape layer's
++			// web-first resolver. Running MatchString again here can mistake a
++			// KEEPWORDS annotation for a catalog ID and bypass web title lookup.
++			movieID = filepath.Base(filePath)
++			ext := filepath.Ext(movieID)
++			if ext != "" {
++				movieID = movieID[:len(movieID)-len(ext)]
+ 			}
+ 		}
+ 	}

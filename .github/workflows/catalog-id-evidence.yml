@@ -1,0 +1,38 @@
+name: Catalog ID Evidence Verification
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/keepwords
+
+jobs:
+  verify-evidence:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test catalog evidence and DMM normalization
+        shell: pwsh
+        run: |
+          go test -v -tags 'keepwords' ./internal/scrape -run '^(TestGoogleIsTheOnlySupportedWebProvider|TestBuildTitleWebQueriesPreservesFastPathAndAddsTargetedQueries|TestTrustedDMMCompactContentIDNormalizesToCatalogID|TestTrustedURLCompactIDSupportsMakerPrefix|TestUntrustedCompactURLDoesNotBecomeCatalogID|TestTrustedCatalogSourceRejectsSpoofedHost|TestWeakUnrelatedTrustedURLStillRejected|TestCorroboratedCandidateBeatsSingleCompetitor|TestVerifiedDirectFallbackIgnoresUnrelatedGoogleResults|TestVerifiedDirectFallbackRejectsStrongConflictingGoogleEvidence)$' -count=1
+          if ($LASTEXITCODE -ne 0) { throw 'catalog evidence tests failed' }
+
+      - name: Test direct JavDB title evidence
+        shell: pwsh
+        run: |
+          go test -v ./internal/scraper/javdb -run '^(TestSearchTitleCandidatesVerifiesDetailPageID|TestJavDBTitleSimilarityRejectsUnrelatedTitle)$' -count=1
+          if ($LASTEXITCODE -ne 0) { throw 'JavDB direct-title tests failed' }
+
+      - name: Test live production title resolution
+        shell: pwsh
+        run: |
+          go test -v -tags 'submissionlive' ./internal/scrape -run '^TestSubmissionLiveTitleToCatalogID$' -count=1 -timeout 5m
+          if ($LASTEXITCODE -ne 0) { throw 'live production title resolution failed' }

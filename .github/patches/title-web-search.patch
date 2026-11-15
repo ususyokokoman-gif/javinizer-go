@@ -1,0 +1,15 @@
+diff --git a/internal/scrape/scrape.go b/internal/scrape/scrape.go
+--- a/internal/scrape/scrape.go
++++ b/internal/scrape/scrape.go
+@@ -339,6 +339,11 @@ func (s *Scraper) Scrape(ctx context.Context, cmd ScrapeCmd) (*ScrapeResult, erro
+ 	if err != nil {
+ 		return nil, err
+ 	}
++
++	// A filename with no extractable catalog ID reaches the scrape layer as its
++	// extension-stripped title. Remove configured KEEPWORDS from the search-only
++	// copy, then resolve the title using trusted/corroborated web evidence.
++	cmd = s.resolveTitleViaWebWithConfiguredNoise(ctx, cmd)
+ 
+ 	var actressRepo database.ActressRepositoryInterface
+ 	if s.actressRepo != nil {

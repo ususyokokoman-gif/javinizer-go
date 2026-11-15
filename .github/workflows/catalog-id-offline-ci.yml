@@ -1,0 +1,73 @@
+name: Catalog ID isolated offline regression
+
+on:
+  push:
+    branches: [fix/catalog-id-evidence-verification]
+  pull_request:
+    paths:
+      - 'internal/scrape/**'
+      - 'internal/config/**'
+      - 'internal/scraper/javdb/**'
+      - 'internal/template/**'
+      - '.github/workflows/catalog-id-offline-ci.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  offline-evidence:
+    name: Offline regression on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - name: Normalize Git checkout to LF for Go (including Windows)
+        shell: bash
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Apply the four production source patches in isolated checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          git apply --check .github/patches/keepwords.patch
+          git apply .github/patches/keepwords.patch
+          for patch in title-search.patch title-web-search.patch worker-web-first.patch; do
+            git apply --recount --check ".github/patches/$patch"
+            git apply --recount ".github/patches/$patch"
+          done
+          git diff --check
+      - name: Verify Go format for changed code
+        shell: bash
+        run: |
+          set -euo pipefail
+          unformatted="$(gofmt -l internal/scrape/config.go internal/scrape/title_web_evidence.go internal/scrape/title_web_search_smart_test.go)"
+          test -z "$unformatted" || { printf '%s\n' "$unformatted"; exit 1; }
+      - name: Check module graph and generated checksums on Linux
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          go mod tidy
+          echo '=== MODULE CHANGE START ==='
+          git diff -- go.mod go.sum
+          echo '=== MODULE CHANGE END ==='
+          git diff --exit-code -- go.mod go.sum
+      - name: Check config-bridge AST and reverse index
+        run: go test ./internal/config -run '^(TestBridgeDocPathsResolve|TestBridgeDocExhaustive|TestBridgeCommentsMatchCode|TestBridgeCommentsMatchActualAccesses)$' -count=1 -timeout 4m
+      - name: Check offline source trust and catalog-ID confidence
+        run: go test -tags keepwords ./internal/scrape -run '^(TestGoogleIsTheOnlySupportedWebProvider|TestBuildTitleWebQueriesPreservesFastPathAndAddsTargetedQueries|TestTrustedDMMCompactContentIDNormalizesToCatalogID|TestTrustedURLCompactIDSupportsMakerPrefix|TestUntrustedCompactURLDoesNotBecomeCatalogID|TestTrustedCatalogSourceRejectsSpoofedHost|TestTrustedCatalogSourceRejectsNonWebAndCredentialURLs|TestWeakUnrelatedTrustedURLStillRejected|TestCorroboratedCandidateBeatsSingleCompetitor|TestVerifiedDirectFallbackIgnoresUnrelatedGoogleResults|TestVerifiedDirectFallbackRejectsStrongConflictingGoogleEvidence)$' -count=1 -timeout 5m
+      - name: Check direct JavDB title evidence (fixture only)
+        run: go test ./internal/scraper/javdb -run '^(TestSearchTitleCandidatesVerifiesDetailPageID|TestJavDBTitleSimilarityRejectsUnrelatedTitle)$' -count=1 -timeout 4m
+      - name: Check KEEPWORDS template rendering (fixture only)
+        run: go test -tags keepwords ./internal/template -count=1 -timeout 4m
+      - name: Go vet targeted packages
+        run: go vet -tags keepwords ./internal/config ./internal/scrape ./internal/scraper/javdb ./internal/template
