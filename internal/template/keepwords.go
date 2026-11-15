@@ -105,10 +105,6 @@ func resolveKeepWordsTag(modifier string, ctx *Context) string {
 	return prefix + strings.Join(matches, delim) + suffix
 }
 
-func containsKeepWord(filename, configured string) bool {
-	return len(findKeepWordRanges(filename, configured)) > 0
-}
-
 func findKeepWordRanges(filename, configured string) []keepWordRange {
 	if configured == "" {
 		return nil

@@ -97,10 +97,6 @@ func trustedCatalogSource(raw string) string {
 	}
 }
 
-func isKnownJAVResultURLStrict(raw string) bool {
-	return trustedCatalogSource(raw) != ""
-}
-
 // extractTrustedURLCatalogCandidates deliberately refuses to inspect arbitrary
 // URLs. It only examines individual path/query tokens from trusted hosts, so a
 // search-engine redirect or a maker prefix can never become a phantom catalog ID.

@@ -96,12 +96,16 @@ func (s *Scraper) fetchTitleWebSearch(ctx context.Context, provider, query strin
 	req.Header.Set("Accept-Language", "ja-JP,ja;q=0.9,en-US;q=0.7,en;q=0.5")
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("Google search request failed: %w", err)
+		return nil, fmt.Errorf("google search request failed: %w", err)
 	}
 	if resp == nil {
-		return nil, fmt.Errorf("Google search returned nil response")
+		return nil, fmt.Errorf("google search returned nil response")
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			logging.Infof("[scrape] closing Google search response body: %v", err)
+		}
+	}()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("Google search returned HTTP %d", resp.StatusCode)
 	}

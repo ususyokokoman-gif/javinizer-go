@@ -8,7 +8,6 @@ import (
 	"golang.org/x/text/unicode/norm"
 )
 
-func isKnownJAVResultURL(raw string) bool { return isKnownJAVResultURLStrict(raw) }
 
 func extractCatalogCandidates(text string) []string {
 	if decoded, err := url.QueryUnescape(text); err == nil { text += " " + decoded }

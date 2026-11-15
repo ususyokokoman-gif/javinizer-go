@@ -50,14 +50,22 @@ func isGoogleControlResult(result titleWebSearchResult) bool {
 
 func fetchGoogleSearchWithHeadlessBrowser(ctx context.Context, endpoint string) ([]titleWebSearchResult, error) {
 	googleBrowserSearchMu.Lock(); defer googleBrowserSearchMu.Unlock()
-	if time.Now().Before(googleBrowserBlockedUntil) { return nil, fmt.Errorf("Google browser fallback is cooling down after an interstitial") }
+	if time.Now().Before(googleBrowserBlockedUntil) { return nil, fmt.Errorf("google browser fallback is cooling down after an interstitial") }
 	browser, err := findHeadlessSearchBrowser()
 	if err != nil { return nil, err }
 	profile, err := os.MkdirTemp("", "javinizer-google-browser-")
 	if err != nil { return nil, fmt.Errorf("create browser profile: %w", err) }
-	defer os.RemoveAll(profile)
+	defer func() {
+		if err := os.RemoveAll(profile); err != nil {
+			// The search has already completed; a leaked temporary browser
+			// profile is a cleanup failure, not an accepted search result.
+			fmt.Fprintf(os.Stderr, "remove temporary headless profile: %v\n", err)
+		}
+	}()
 	browserCtx, cancel := context.WithTimeout(ctx,18*time.Second); defer cancel()
 	args := []string{"--headless=new","--disable-gpu","--no-first-run","--disable-default-apps","--disable-extensions","--disable-background-networking","--disable-sync","--lang=ja-JP","--user-data-dir="+profile,"--virtual-time-budget=6000","--dump-dom",endpoint}
+	// #nosec G204 -- Local preselected browser from findHeadlessSearchBrowser;
+	// arguments are fixed switches plus the generated search URL; no shell.
 	cmd := exec.CommandContext(browserCtx,browser,args...)
 	var stderr strings.Builder; cmd.Stderr=&stderr
 	body, err := cmd.Output()
