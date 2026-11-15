@@ -107,7 +107,7 @@ func (s *Scraper) fetchTitleWebSearch(ctx context.Context, provider, query strin
 		}
 	}()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("Google search returned HTTP %d", resp.StatusCode)
+		return nil, fmt.Errorf("google search returned HTTP %d", resp.StatusCode)
 	}
 	doc, err := goquery.NewDocumentFromReader(io.LimitReader(resp.Body, maxWebSearchBody))
 	if err != nil {
