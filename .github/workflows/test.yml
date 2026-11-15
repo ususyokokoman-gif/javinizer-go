@@ -431,7 +431,8 @@ jobs:
   # Gate merge: set this job as a required status check in branch protection.
   fullstack-e2e:
     name: Fullstack E2E Tests
-    runs-on: ubuntu-latest
+    # Pin to supported Playwright runtime; ubuntu-latest now uses Ubuntu 26.04.
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
 
     steps:
@@ -485,7 +486,8 @@ jobs:
   # local-only live scrapers (test/e2e/live, never in CI).
   frontend-e2e:
     name: Frontend-only E2E Tests
-    runs-on: ubuntu-latest
+    # Pin to supported Playwright runtime; ubuntu-latest now uses Ubuntu 26.04.
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
 
     steps:
@@ -530,7 +532,8 @@ jobs:
   # Vite-dev-server suites (frontend-e2e, fullstack-e2e) cannot exercise.
   static-e2e:
     name: Static-flavor E2E Tests
-    runs-on: ubuntu-latest
+    # Pin to supported Playwright runtime; ubuntu-latest now uses Ubuntu 26.04.
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
 
     steps:
