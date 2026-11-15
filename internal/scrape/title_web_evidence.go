@@ -71,7 +71,10 @@ func mergeTitleWebResults(groups ...[]titleWebSearchResult) []titleWebSearchResu
 // dmm.co.jp.example.com never become trusted.
 func trustedCatalogSource(raw string) string {
 	parsed, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil {
+	if err != nil || parsed == nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.User != nil || parsed.Opaque != "" {
+		return ""
+	}
+	if port := parsed.Port(); port != "" && port != "80" && port != "443" {
 		return ""
 	}
 	host := strings.ToLower(strings.TrimSuffix(parsed.Hostname(), "."))

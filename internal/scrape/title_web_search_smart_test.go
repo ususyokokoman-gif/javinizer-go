@@ -146,3 +146,29 @@ func TestVerifiedDirectFallbackRejectsStrongConflictingGoogleEvidence(t *testing
 		t.Fatalf("conflicting Google evidence returned %q without error", got)
 	}
 }
+
+func TestTrustedCatalogSourceRejectsNonWebAndCredentialURLs(t *testing.T) {
+	rejected := []string{
+		"ftp://www.dmm.co.jp/digital/videoa/-/detail/=/cid=ssis00001/",
+		"javascript://www.dmm.co.jp/digital/videoa/-/detail/=/cid=ssis00001/",
+		"https://attacker@www.dmm.co.jp/digital/videoa/-/detail/=/cid=ssis00001/",
+		"https://www.dmm.co.jp:2222/digital/videoa/-/detail/=/cid=ssis00001/",
+		"https://www.dmm.co.jp.evil.invalid/digital/videoa/-/detail/=/cid=ssis00001/",
+	}
+	for _, raw := range rejected {
+		if got := trustedCatalogSource(raw); got != "" {
+			t.Errorf("untrusted URL %q yielded source %q", raw, got)
+		}
+		if ids := extractTrustedURLCatalogCandidates(raw); len(ids) != 0 {
+			t.Errorf("untrusted URL %q yielded IDs %v", raw, ids)
+		}
+	}
+	for _, raw := range []string{
+		"http://www.dmm.co.jp/digital/videoa/-/detail/=/cid=ssis00001/",
+		"https://www.dmm.co.jp/digital/videoa/-/detail/=/cid=ssis00001/",
+	} {
+		if got := trustedCatalogSource(raw); got != "dmm" {
+			t.Errorf("legitimate web URL %q rejected as %q", raw, got)
+		}
+	}
+}

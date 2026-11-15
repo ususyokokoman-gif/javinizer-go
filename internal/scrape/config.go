@@ -129,7 +129,8 @@ func normalizeKeepWordKey(word string) string {
 // cfg.Metadata.Translation.TargetLanguage, cfg.Metadata.Translation.SettingsHash(),
 // cfg.Metadata.ActressDatabase.Enabled, cfg.Scrapers.ScrapeActress,
 // cfg.Scrapers.UserAgent, cfg.Scrapers.Referer, cfg.System.TempDir,
-// and every output naming template containing KEEPWORDS.
+// cfg.Output.Template.FileFormat, cfg.Output.Template.FolderFormat,
+// cfg.Output.Template.SubfolderFormat (read via cfg.Output as one sub-config).
 func ConfigFromAppConfig(cfg *config.Config) *Config {
 	if cfg == nil {
 		return nil
