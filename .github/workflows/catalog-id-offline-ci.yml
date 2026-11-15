@@ -51,6 +51,16 @@ jobs:
           set -euo pipefail
           unformatted="$(gofmt -l internal/scrape/config.go internal/scrape/title_web_evidence.go internal/scrape/title_web_search_smart_test.go)"
           test -z "$unformatted" || { printf '%s\n' "$unformatted"; exit 1; }
+      - name: Check module graph and generated checksums on Linux
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          go mod tidy
+          echo '=== MODULE CHANGE START ==='
+          git diff -- go.mod go.sum
+          echo '=== MODULE CHANGE END ==='
+          git diff --exit-code -- go.mod go.sum
       - name: Check config-bridge AST and reverse index
         run: go test ./internal/config -run '^(TestBridgeDocPathsResolve|TestBridgeDocExhaustive|TestBridgeCommentsMatchCode|TestBridgeCommentsMatchActualAccesses)$' -count=1 -timeout 4m
       - name: Check offline source trust and catalog-ID confidence
